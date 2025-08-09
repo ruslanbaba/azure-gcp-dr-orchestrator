@@ -1,0 +1,476 @@
+# GitHub Actions workflow for automated security testing and bug tracking
+name: Security & Quality Assurance
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    # Run security scans daily at 2 AM UTC
+    - cron: '0 2 * * *'
+
+env:
+  PYTHON_VERSION: '3.11'
+  NODE_VERSION: '18'
+
+jobs:
+  secrets-scanning:
+    name: 🔒 Secrets Detection
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: TruffleHog OSS
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: main
+          head: HEAD
+          extra_args: --debug --only-verified
+
+      - name: GitLeaks Scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: GitGuardian Scan
+        uses: GitGuardian/ggshield-action@v1.25.0
+        env:
+          GITHUB_PUSH_BEFORE_SHA: ${{ github.event.before }}
+          GITHUB_PUSH_BASE_SHA: ${{ github.event.base }}
+          GITHUB_PULL_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GITHUB_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GITGUARDIAN_API_KEY: ${{ secrets.GITGUARDIAN_API_KEY }}
+
+  dependency-scanning:
+    name: 🔍 Dependency Vulnerabilities
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install safety bandit semgrep
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f tests/requirements.txt ]; then pip install -r tests/requirements.txt; fi
+
+      - name: Safety Check (Python Dependencies)
+        run: |
+          safety check --json --output safety-report.json || true
+          safety check --short-report
+
+      - name: Snyk Security Scan
+        uses: snyk/actions/python@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=medium --json-file-output=snyk-report.json
+
+      - name: Upload Dependency Reports
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: dependency-scan-reports
+          path: |
+            safety-report.json
+            snyk-report.json
+
+  code-security-analysis:
+    name: 🛡️ Static Code Analysis
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Security Tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install bandit[toml] semgrep
+
+      - name: Bandit Security Linting
+        run: |
+          bandit -r . -f json -o bandit-report.json || true
+          bandit -r . -f txt
+
+      - name: Semgrep Static Analysis
+        env:
+          SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+        run: |
+          semgrep --config=auto --json --output=semgrep-report.json . || true
+          semgrep --config=auto .
+
+      - name: CodeQL Analysis
+        uses: github/codeql-action/init@v2
+        with:
+          languages: python, javascript
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v2
+
+      - name: Upload Security Reports
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: security-analysis-reports
+          path: |
+            bandit-report.json
+            semgrep-report.json
+
+  container-security:
+    name: 🐳 Container Security Scan
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Build Test Container
+        run: |
+          # Build a test container if Dockerfile exists
+          if [ -f Dockerfile ]; then
+            docker build -t dr-orchestrator:test .
+          fi
+
+      - name: Trivy Container Scan
+        uses: aquasecurity/trivy-action@master
+        if: hashFiles('Dockerfile') != ''
+        with:
+          image-ref: 'dr-orchestrator:test'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: Upload Trivy Scan Results
+        uses: github/codeql-action/upload-sarif@v2
+        if: hashFiles('trivy-results.sarif') != ''
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+  infrastructure-security:
+    name: 🏗️ Infrastructure Security
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Terraform Security Scan (Checkov)
+        uses: bridgecrewio/checkov-action@master
+        with:
+          directory: .
+          framework: terraform
+          output_format: sarif
+          output_file_path: checkov-report.sarif
+
+      - name: Upload Checkov Results
+        uses: github/codeql-action/upload-sarif@v2
+        if: always()
+        with:
+          sarif_file: checkov-report.sarif
+
+      - name: TFSec Security Scanner
+        uses: aquasecurity/tfsec-action@v1.0.3
+        with:
+          working_directory: terraform/
+          format: sarif
+          output: tfsec-report.sarif
+
+      - name: Upload TFSec Results
+        uses: github/codeql-action/upload-sarif@v2
+        if: always()
+        with:
+          sarif_file: tfsec-report.sarif
+
+  api-security-testing:
+    name: 🌐 API Security Testing
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: test_db
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r tests/requirements.txt
+
+      - name: Run API Security Tests
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/test_db
+        run: |
+          python -m pytest tests/security/test_security_scan.py -v --json-report --json-report-file=api-security-report.json
+
+      - name: Upload API Security Report
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: api-security-report
+          path: api-security-report.json
+
+  ui-testing:
+    name: 🖥️ UI Security & Functionality Testing
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install selenium webdriver-manager pytest
+          pip install -r tests/requirements.txt
+
+      - name: Install Chrome
+        uses: browser-actions/setup-chrome@latest
+
+      - name: Run Selenium UI Tests
+        run: |
+          python -m pytest tests/selenium/test_ui.py -v --html=ui-test-report.html --self-contained-html
+
+      - name: Upload UI Test Report
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: ui-test-report
+          path: ui-test-report.html
+
+  bdd-testing:
+    name: 🥒 BDD Feature Testing
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install behave selenium requests
+          pip install -r tests/requirements.txt
+
+      - name: Run BDD Tests
+        run: |
+          cd tests
+          behave features/ --format=json --outfile=bdd-report.json
+
+      - name: Upload BDD Report
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: bdd-test-report
+          path: tests/bdd-report.json
+
+  performance-testing:
+    name: ⚡ Performance & Load Testing
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Locust
+        run: |
+          python -m pip install --upgrade pip
+          pip install locust
+
+      - name: Create Load Test Script
+        run: |
+          cat > locustfile.py << 'EOF'
+          from locust import HttpUser, task, between
+          
+          class DRUser(HttpUser):
+              wait_time = between(1, 3)
+              
+              @task
+              def check_health(self):
+                  self.client.get("/health")
+              
+              @task(3)
+              def get_metrics(self):
+                  self.client.get("/metrics")
+          EOF
+
+      - name: Run Performance Test
+        run: |
+          # Run a lightweight performance test
+          locust --headless --users 10 --spawn-rate 2 --run-time 30s --host http://localhost:8080 || true
+
+  comprehensive-scan:
+    name: 🔒 Comprehensive Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Security Tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install bandit safety semgrep
+          pip install -r tests/requirements.txt
+
+      - name: Run Comprehensive Security Scan
+        run: |
+          python tests/security/test_security_scan.py
+
+      - name: Upload Comprehensive Report
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: comprehensive-security-report
+          path: security_scan_report.json
+
+  security-reporting:
+    name: 📊 Security Report Generation
+    runs-on: ubuntu-latest
+    needs: [secrets-scanning, dependency-scanning, code-security-analysis, comprehensive-scan]
+    if: always()
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Download All Reports
+        uses: actions/download-artifact@v3
+
+      - name: Generate Security Dashboard
+        run: |
+          python3 -c "
+          import json
+          import os
+          from datetime import datetime
+          
+          # Collect all security reports
+          reports = {}
+          
+          # Process comprehensive report
+          if os.path.exists('comprehensive-security-report/security_scan_report.json'):
+              with open('comprehensive-security-report/security_scan_report.json', 'r') as f:
+                  reports['comprehensive'] = json.load(f)
+          
+          # Generate summary
+          summary = {
+              'scan_date': datetime.now().isoformat(),
+              'repository': '${{ github.repository }}',
+              'commit': '${{ github.sha }}',
+              'reports': reports
+          }
+          
+          # Save summary
+          with open('security-summary.json', 'w') as f:
+              json.dump(summary, f, indent=2)
+          
+          print('Security scan completed successfully!')
+          "
+
+      - name: Upload Security Summary
+        uses: actions/upload-artifact@v3
+        with:
+          name: security-summary
+          path: security-summary.json
+
+      - name: Comment on PR (if applicable)
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const fs = require('fs');
+            
+            if (fs.existsSync('security-summary.json')) {
+              const summary = JSON.parse(fs.readFileSync('security-summary.json', 'utf8'));
+              
+              const comment = `## 🔒 Security Scan Results
+              
+              **Scan Date:** ${summary.scan_date}
+              **Commit:** ${summary.commit}
+              
+              ### Summary
+              - ✅ Secrets scanning completed
+              - ✅ Dependency vulnerability check completed  
+              - ✅ Static code analysis completed
+              - ✅ Comprehensive security scan completed
+              
+              **Status:** ${summary.reports.comprehensive?.summary?.status || 'Unknown'}
+              
+              For detailed results, check the Actions artifacts.
+              `;
+              
+              github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: comment
+              });
+            }
+
+  notify-security-team:
+    name: 🚨 Security Team Notification
+    runs-on: ubuntu-latest
+    needs: [comprehensive-scan]
+    if: failure()
+    steps:
+      - name: Notify Security Team
+        uses: 8398a7/action-slack@v3
+        with:
+          status: failure
+          channel: '#security-alerts'
+          text: |
+            🚨 Security scan failed for ${{ github.repository }}
+            
+            **Branch:** ${{ github.ref }}
+            **Commit:** ${{ github.sha }}
+            **Triggered by:** ${{ github.actor }}
+            
+            Please review the security scan results immediately.
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

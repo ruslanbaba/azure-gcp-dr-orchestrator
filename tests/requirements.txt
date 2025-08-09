@@ -1,0 +1,50 @@
+# Test Automation and Security Framework
+
+## 🧪 Test Dependencies
+
+pytest==7.4.0
+pytest-cov==4.1.0
+pytest-html==3.2.0
+pytest-xdist==3.3.1
+selenium==4.11.2
+webdriver-manager==3.8.6
+cucumber-expressions==16.1.2
+behave==1.2.6
+requests==2.31.0
+paramiko==3.3.1
+psutil==5.9.5
+
+# Security Testing
+bandit==1.7.5
+safety==2.3.5
+semgrep==1.34.1
+truffleHog==2.2.1
+git-secrets==0.3.0
+
+# Load Testing
+locust==2.15.1
+jmeter==1.0.1
+
+# Monitoring & Reporting
+allure-pytest==2.13.2
+pytest-json-report==1.5.0
+junitparser==3.1.0
+
+# API Testing
+httpx==0.24.1
+jsonschema==4.19.0
+faker==19.3.1
+
+# Database Testing
+sqlalchemy==2.0.19
+psycopg2-binary==2.9.7
+pymongo==4.4.1
+
+# Cloud Testing
+boto3==1.28.25
+google-cloud-monitoring==2.15.1
+azure-mgmt-monitor==0.11.0
+
+# Performance Monitoring
+py-spy==0.3.14
+memory-profiler==0.60.0
