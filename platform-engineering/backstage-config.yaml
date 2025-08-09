@@ -1,0 +1,184 @@
+# Platform Engineering: Developer Experience & Self-Service
+
+## Backstage Developer Portal Configuration
+
+# backstage/app-config.yaml
+app:
+  title: DR Orchestrator Platform
+  baseUrl: http://localhost:3000
+  support:
+    url: https://github.com/company/dr-orchestrator/issues
+    items:
+      - title: Issues
+        icon: github
+        links:
+          - url: https://github.com/company/dr-orchestrator/issues
+            title: GitHub Issues
+
+organization:
+  name: Enterprise Cloud Platform
+
+backend:
+  baseUrl: http://localhost:7007
+  listen:
+    port: 7007
+    host: 0.0.0.0
+  csp:
+    connect-src: ["'self'", 'http:', 'https:']
+  cors:
+    origin: http://localhost:3000
+    methods: [GET, HEAD, PATCH, POST, PUT, DELETE]
+    credentials: true
+  
+  # Database configuration
+  database:
+    client: pg
+    connection:
+      host: ${POSTGRES_HOST}
+      port: ${POSTGRES_PORT}
+      user: ${POSTGRES_USER}
+      password: ${POSTGRES_PASSWORD}
+      database: backstage_plugin_catalog
+
+integrations:
+  github:
+    - host: github.com
+      token: ${GITHUB_TOKEN}
+  
+  gitlab:
+    - host: gitlab.com
+      token: ${GITLAB_TOKEN}
+  
+  azure:
+    - host: dev.azure.com
+      token: ${AZURE_TOKEN}
+
+proxy:
+  endpoints:
+    '/argocd/api':
+      target: https://argocd.company.com/api/v1/
+      changeOrigin: true
+      headers:
+        Authorization: Bearer ${ARGOCD_TOKEN}
+    
+    '/grafana/api':
+      target: https://grafana.company.com/
+      changeOrigin: true
+      headers:
+        Authorization: Bearer ${GRAFANA_TOKEN}
+    
+    '/prometheus/api':
+      target: https://prometheus.company.com/
+      changeOrigin: true
+
+techdocs:
+  builder: 'local'
+  generator:
+    runIn: 'docker'
+  publisher:
+    type: 'googleGcs'
+    googleGcs:
+      bucketName: 'company-backstage-techdocs'
+      credentials: ${GOOGLE_APPLICATION_CREDENTIALS}
+
+auth:
+  environment: development
+  providers:
+    github:
+      development:
+        clientId: ${AUTH_GITHUB_CLIENT_ID}
+        clientSecret: ${AUTH_GITHUB_CLIENT_SECRET}
+    
+    microsoft:
+      development:
+        clientId: ${AUTH_MICROSOFT_CLIENT_ID}
+        clientSecret: ${AUTH_MICROSOFT_CLIENT_SECRET}
+        tenantId: ${AUTH_MICROSOFT_TENANT_ID}
+
+scaffolder:
+  defaultAuthor:
+    name: Platform Team
+    email: platform@company.com
+  defaultCommitMessage: 'Initial commit from Backstage scaffolder'
+
+catalog:
+  import:
+    entityFilename: catalog-info.yaml
+    pullRequestBranchName: backstage-integration
+  
+  rules:
+    - allow: [Component, System, API, Resource, Location, User, Group]
+  
+  locations:
+    # Enterprise service catalog
+    - type: url
+      target: https://github.com/company/service-catalog/blob/main/catalog.yaml
+    
+    # Platform templates
+    - type: url
+      target: https://github.com/company/backstage-templates/blob/main/template-index.yaml
+    
+    # DR Orchestrator services
+    - type: url
+      target: https://github.com/company/dr-orchestrator/blob/main/catalog/entities.yaml
+
+kubernetes:
+  serviceLocatorMethod:
+    type: 'multiTenant'
+  clusterLocatorMethods:
+    - type: 'config'
+      clusters:
+        - url: https://k8s-prod.company.com
+          name: production
+          authProvider: 'serviceAccount'
+          serviceAccountToken: ${K8S_PROD_TOKEN}
+          skipTLSVerify: false
+          caData: ${K8S_PROD_CA}
+        
+        - url: https://k8s-staging.company.com
+          name: staging
+          authProvider: 'serviceAccount'
+          serviceAccountToken: ${K8S_STAGING_TOKEN}
+          skipTLSVerify: false
+          caData: ${K8S_STAGING_CA}
+
+argocd:
+  username: ${ARGOCD_USERNAME}
+  password: ${ARGOCD_PASSWORD}
+  appLocatorMethods:
+    - type: 'config'
+      instances:
+        - name: production
+          url: https://argocd-prod.company.com
+          token: ${ARGOCD_PROD_TOKEN}
+        
+        - name: staging
+          url: https://argocd-staging.company.com
+          token: ${ARGOCD_STAGING_TOKEN}
+
+jenkins:
+  instances:
+    - name: production
+      baseUrl: https://jenkins-prod.company.com
+      username: ${JENKINS_USERNAME}
+      apiKey: ${JENKINS_API_KEY}
+
+grafana:
+  domain: https://grafana.company.com
+  unifiedAlerting: true
+
+costInsights:
+  engineerCost: 200000
+  products:
+    computeEngine:
+      name: Compute Engine
+      icon: compute
+    cloudStorage:
+      name: Cloud Storage
+      icon: storage
+  metrics:
+    DAU:
+      name: Daily Active Users
+      default: true
+    MSC:
+      name: Monthly Subscriber Cost

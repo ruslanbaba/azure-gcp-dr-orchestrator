@@ -1,0 +1,470 @@
+# GitOps-Enabled CI/CD Pipeline for Enterprise DR Orchestrator
+
+name: Enterprise DR Orchestrator Pipeline
+on:
+  push:
+    branches: [main, develop, release/*]
+    paths:
+    - 'src/**'
+    - 'terraform/**'
+    - 'kubernetes/**'
+    - 'cloud-functions/**'
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '0 2 * * *'  # Daily security scan
+
+env:
+  REGISTRY: gcr.io
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  TERRAFORM_VERSION: 1.5.0
+  KUBECTL_VERSION: 1.28.0
+
+jobs:
+  # Security and Compliance Scanning
+  security-scan:
+    name: Security & Compliance Scan
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Run Trivy Security Scan
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'fs'
+        scan-ref: '.'
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+        severity: 'CRITICAL,HIGH'
+
+    - name: Upload Trivy Results
+      uses: github/codeql-action/upload-sarif@v2
+      with:
+        sarif_file: 'trivy-results.sarif'
+
+    - name: Checkov Infrastructure Scan
+      uses: bridgecrewio/checkov-action@master
+      with:
+        directory: terraform/
+        framework: terraform
+        output_format: sarif
+        output_file_path: checkov-report.sarif
+        skip_check: CKV_GCP_6,CKV_GCP_7  # Skip specific checks if needed
+
+    - name: SonarCloud Code Quality
+      uses: SonarSource/sonarcloud-github-action@master
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+    - name: SAST with Semgrep
+      uses: returntocorp/semgrep-action@v1
+      with:
+        config: >-
+          p/security-audit
+          p/secrets
+          p/dockerfile
+          p/kubernetes
+
+  # Infrastructure Validation
+  terraform-validate:
+    name: Terraform Validation
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        environment: [development, staging, production]
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v2
+      with:
+        terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+    - name: Authenticate to GCP
+      uses: google-github-actions/auth@v1
+      with:
+        credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+    - name: Terraform Init
+      run: |
+        cd terraform/enhanced-security
+        terraform init -backend-config="bucket=${{ env.PROJECT_ID }}-terraform-state"
+
+    - name: Terraform Validate
+      run: |
+        cd terraform/enhanced-security
+        terraform validate
+
+    - name: Terraform Plan
+      run: |
+        cd terraform/enhanced-security
+        terraform plan \
+          -var-file="../../configs/environments/${{ matrix.environment }}.tfvars" \
+          -out=tfplan-${{ matrix.environment }}
+
+    - name: Upload Terraform Plan
+      uses: actions/upload-artifact@v3
+      with:
+        name: tfplan-${{ matrix.environment }}
+        path: terraform/enhanced-security/tfplan-${{ matrix.environment }}
+
+    - name: Policy Validation with Conftest
+      run: |
+        cd terraform/enhanced-security
+        terraform show -json tfplan-${{ matrix.environment }} | conftest verify --policy ../../policies/terraform/
+
+  # Container Build and Scan
+  container-build:
+    name: Build and Scan Containers
+    runs-on: ubuntu-latest
+    needs: [security-scan]
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Set up Cloud SDK
+      uses: google-github-actions/setup-gcloud@v1
+
+    - name: Authenticate to GCP
+      uses: google-github-actions/auth@v1
+      with:
+        credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+    - name: Configure Docker
+      run: gcloud auth configure-docker
+
+    - name: Build DR Orchestrator Image
+      run: |
+        docker build -t ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/dr-orchestrator:${{ github.sha }} \
+          --build-arg BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ') \
+          --build-arg VCS_REF=${{ github.sha }} \
+          --build-arg VERSION=${{ github.ref_name }} \
+          -f docker/Dockerfile .
+
+    - name: Vulnerability Scan with Trivy
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/dr-orchestrator:${{ github.sha }}
+        format: 'table'
+        exit-code: '1'
+        ignore-unfixed: true
+        severity: 'CRITICAL,HIGH'
+
+    - name: Binary Authorization Attestation
+      if: github.ref == 'refs/heads/main'
+      run: |
+        # Create attestation for Binary Authorization
+        gcloud container binauthz attestations sign-and-create \
+          --artifact-url=${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/dr-orchestrator:${{ github.sha }} \
+          --attestor=projects/${{ env.PROJECT_ID }}/attestors/prod-attestor \
+          --keyversion=projects/${{ env.PROJECT_ID }}/locations/global/keyRings/binauthz/cryptoKeys/attestor-key/cryptoKeyVersions/1
+
+    - name: Push Container Image
+      if: github.ref == 'refs/heads/main'
+      run: |
+        docker push ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/dr-orchestrator:${{ github.sha }}
+        docker tag ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/dr-orchestrator:${{ github.sha }} \
+          ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/dr-orchestrator:latest
+        docker push ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/dr-orchestrator:latest
+
+  # Kubernetes Manifest Validation
+  k8s-validate:
+    name: Kubernetes Validation
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Setup kubectl
+      uses: azure/setup-kubectl@v3
+      with:
+        version: ${{ env.KUBECTL_VERSION }}
+
+    - name: Validate Kubernetes Manifests
+      run: |
+        kubectl --dry-run=client apply -f kubernetes/security-hardened/manifests.yaml
+        kubectl --dry-run=server apply -f kubernetes/security-hardened/manifests.yaml
+
+    - name: Kubernetes Security with Kubesec
+      run: |
+        docker run --rm -v $(pwd):/workdir kubesec/kubesec:latest scan /workdir/kubernetes/security-hardened/manifests.yaml
+
+    - name: Policy Validation with OPA Conftest
+      run: |
+        conftest verify --policy policies/kubernetes/ kubernetes/security-hardened/manifests.yaml
+
+    - name: Kustomize Build Test
+      run: |
+        kubectl kustomize kubernetes/overlays/production/ > /tmp/production-manifests.yaml
+        kubectl --dry-run=client apply -f /tmp/production-manifests.yaml
+
+  # Integration Tests
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: test_db
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        cache: 'pip'
+
+    - name: Install Dependencies
+      run: |
+        pip install -r requirements.txt
+        pip install -r requirements-test.txt
+
+    - name: Run Unit Tests
+      run: |
+        pytest tests/unit/ --cov=src --cov-report=xml --junitxml=test-results.xml
+
+    - name: Run Integration Tests
+      env:
+        DATABASE_URL: postgresql://postgres:postgres@localhost:5432/test_db
+      run: |
+        pytest tests/integration/ --junitxml=integration-results.xml
+
+    - name: Upload Test Results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: test-results
+        path: |
+          test-results.xml
+          integration-results.xml
+          coverage.xml
+
+  # Performance Testing
+  performance-tests:
+    name: Performance Tests
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || contains(github.event.pull_request.labels.*.name, 'performance-test')
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Setup k6
+      run: |
+        sudo apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+        echo "deb https://dl.k6.io/deb stable main" | sudo tee /dev/null >> /etc/apt/sources.list.d/k6.list
+        sudo apt-get update
+        sudo apt-get install k6
+
+    - name: Run Performance Tests
+      run: |
+        k6 run \
+          --vus 10 \
+          --duration 2m \
+          --thresholds 'http_req_duration{percentile:95}<500' \
+          --thresholds 'http_req_failed<0.1' \
+          tests/performance/failover-test.js
+
+  # Deploy to Development
+  deploy-dev:
+    name: Deploy to Development
+    runs-on: ubuntu-latest
+    needs: [terraform-validate, container-build, k8s-validate, integration-tests]
+    if: github.ref == 'refs/heads/develop'
+    environment: development
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Authenticate to GCP
+      uses: google-github-actions/auth@v1
+      with:
+        credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+    - name: Setup Tools
+      run: |
+        # Install ArgoCD CLI
+        curl -sSL -o argocd-linux-amd64 https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
+        sudo install -m 555 argocd-linux-amd64 /usr/local/bin/argocd
+
+    - name: Deploy via ArgoCD
+      run: |
+        argocd app sync dr-orchestrator-dev \
+          --server ${{ secrets.ARGOCD_SERVER }} \
+          --auth-token ${{ secrets.ARGOCD_TOKEN }} \
+          --revision ${{ github.sha }}
+
+    - name: Verify Deployment
+      run: |
+        ./scripts/verify-deployment.sh development
+
+  # Deploy to Staging
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: [deploy-dev, performance-tests]
+    if: github.ref == 'refs/heads/main'
+    environment: staging
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Authenticate to GCP
+      uses: google-github-actions/auth@v1
+      with:
+        credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+    - name: Deploy Infrastructure
+      run: |
+        cd terraform/enhanced-security
+        terraform init -backend-config="bucket=${{ env.PROJECT_ID }}-terraform-state"
+        terraform apply -auto-approve -var-file="../../configs/environments/staging.tfvars"
+
+    - name: Deploy Application via ArgoCD
+      run: |
+        argocd app sync dr-orchestrator-staging \
+          --server ${{ secrets.ARGOCD_SERVER }} \
+          --auth-token ${{ secrets.ARGOCD_TOKEN }} \
+          --revision ${{ github.sha }}
+
+    - name: Run Smoke Tests
+      run: |
+        ./scripts/smoke-tests.sh staging
+
+    - name: Run Chaos Engineering Tests
+      run: |
+        kubectl apply -f chaos-engineering/staging-experiments.yaml
+        ./scripts/wait-for-chaos-completion.sh
+
+  # Deploy to Production (Manual Approval)
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [deploy-staging]
+    if: github.ref == 'refs/heads/main'
+    environment: production
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Authenticate to GCP
+      uses: google-github-actions/auth@v1
+      with:
+        credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+    - name: Pre-deployment Checks
+      run: |
+        ./scripts/pre-deployment-checks.sh production
+
+    - name: Blue-Green Deployment
+      run: |
+        # Deploy to green environment
+        argocd app sync dr-orchestrator-green \
+          --server ${{ secrets.ARGOCD_SERVER }} \
+          --auth-token ${{ secrets.ARGOCD_TOKEN }} \
+          --revision ${{ github.sha }}
+
+    - name: Canary Analysis
+      run: |
+        ./scripts/canary-analysis.sh production 10  # 10% traffic
+
+    - name: Full Traffic Switch
+      run: |
+        ./scripts/traffic-switch.sh green
+
+    - name: Post-deployment Validation
+      run: |
+        ./scripts/post-deployment-validation.sh production
+
+    - name: Cleanup Blue Environment
+      run: |
+        argocd app delete dr-orchestrator-blue \
+          --server ${{ secrets.ARGOCD_SERVER }} \
+          --auth-token ${{ secrets.ARGOCD_TOKEN }}
+
+  # Notification and Reporting
+  notify:
+    name: Notify Teams
+    runs-on: ubuntu-latest
+    needs: [deploy-production]
+    if: always()
+    steps:
+    - name: Slack Notification
+      uses: 8398a7/action-slack@v3
+      with:
+        status: ${{ job.status }}
+        channel: '#platform-engineering'
+        webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+        fields: repo,message,commit,author,action,eventName,ref,workflow
+
+    - name: PagerDuty Notification
+      if: failure()
+      uses: manovotn/pagerduty-github-action@v1
+      with:
+        pagerduty-token: ${{ secrets.PAGERDUTY_TOKEN }}
+        pagerduty-service-id: ${{ secrets.PAGERDUTY_SERVICE_ID }}
+        summary: "DR Orchestrator deployment failed"
+        severity: "critical"
+
+    - name: Generate Deployment Report
+      run: |
+        ./scripts/generate-deployment-report.sh ${{ github.sha }} > deployment-report.md
+
+    - name: Comment PR with Results
+      if: github.event_name == 'pull_request'
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const fs = require('fs');
+          const report = fs.readFileSync('deployment-report.md', 'utf8');
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: report
+          });
+
+  # Security Monitoring
+  security-monitoring:
+    name: Security Monitoring
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+    - name: Dependency Check
+      uses: dependency-check/Dependency-Check_Action@main
+      with:
+        project: 'azure-gcp-dr-orchestrator'
+        path: '.'
+        format: 'ALL'
+
+    - name: License Check
+      uses: fossa-contrib/fossa-action@v2
+      with:
+        api-key: ${{ secrets.FOSSA_API_KEY }}
+
+    - name: Supply Chain Security
+      uses: sigstore/cosign-installer@v3
+
+    - name: Sign Container Images
+      if: success()
+      run: |
+        cosign sign --key env://COSIGN_PRIVATE_KEY \
+          ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/dr-orchestrator:${{ github.sha }}
+      env:
+        COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+        COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}

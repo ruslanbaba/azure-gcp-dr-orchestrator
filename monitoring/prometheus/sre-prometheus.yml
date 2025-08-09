@@ -1,0 +1,402 @@
+# SRE-Grade Monitoring and Alerting Configuration
+
+# SLO Configuration for DR Orchestrator
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: 'dr-production'
+    environment: 'production'
+
+rule_files:
+  - "/etc/prometheus/rules/*.yml"
+  - "/etc/prometheus/slo/*.yml"
+
+# Alertmanager configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+          - alertmanager:9093
+      path_prefix: /
+      scheme: http
+      timeout: 10s
+
+# Scrape configurations
+scrape_configs:
+  # Kubernetes API server
+  - job_name: 'kubernetes-apiservers'
+    kubernetes_sd_configs:
+    - role: endpoints
+      namespaces:
+        names:
+        - default
+    scheme: https
+    tls_config:
+      ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+      insecure_skip_verify: true
+    bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+    relabel_configs:
+    - source_labels: [__meta_kubernetes_namespace, __meta_kubernetes_service_name, __meta_kubernetes_endpoint_port_name]
+      action: keep
+      regex: default;kubernetes;https
+
+  # DR Orchestrator application metrics
+  - job_name: 'dr-orchestrator'
+    kubernetes_sd_configs:
+    - role: endpoints
+      namespaces:
+        names:
+        - dr-system
+        - dr-system-staging
+        - dr-system-dev
+    relabel_configs:
+    - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_scrape]
+      action: keep
+      regex: true
+    - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_path]
+      action: replace
+      target_label: __metrics_path__
+      regex: (.+)
+    - source_labels: [__address__, __meta_kubernetes_service_annotation_prometheus_io_port]
+      action: replace
+      regex: ([^:]+)(?::\d+)?;(\d+)
+      replacement: $1:$2
+      target_label: __address__
+    - action: labelmap
+      regex: __meta_kubernetes_service_label_(.+)
+    - source_labels: [__meta_kubernetes_namespace]
+      action: replace
+      target_label: kubernetes_namespace
+    - source_labels: [__meta_kubernetes_service_name]
+      action: replace
+      target_label: kubernetes_name
+    - source_labels: [__meta_kubernetes_pod_name]
+      action: replace
+      target_label: kubernetes_pod_name
+
+  # Node exporter for infrastructure metrics
+  - job_name: 'node-exporter'
+    kubernetes_sd_configs:
+    - role: endpoints
+      namespaces:
+        names:
+        - monitoring
+    relabel_configs:
+    - source_labels: [__meta_kubernetes_endpoints_name]
+      action: keep
+      regex: node-exporter
+    - source_labels: [__address__]
+      regex: '(.*):9100'
+      target_label: __address__
+      replacement: '${1}:9100'
+
+  # Istio control plane metrics
+  - job_name: 'istio-mesh'
+    kubernetes_sd_configs:
+    - role: endpoints
+      namespaces:
+        names:
+        - istio-system
+    relabel_configs:
+    - source_labels: [__meta_kubernetes_service_name, __meta_kubernetes_endpoint_port_name]
+      action: keep
+      regex: istio-telemetry;prometheus
+
+  # Istio proxy metrics
+  - job_name: 'istio-proxy'
+    kubernetes_sd_configs:
+    - role: endpoints
+      namespaces:
+        names:
+        - dr-system
+        - dr-system-staging
+        - dr-system-dev
+    relabel_configs:
+    - source_labels: [__meta_kubernetes_service_name, __meta_kubernetes_endpoint_port_name]
+      action: keep
+      regex: .*-metrics;http-monitoring
+    - source_labels: [__address__, __meta_kubernetes_service_annotation_prometheus_io_port]
+      action: replace
+      regex: ([^:]+)(?::\d+)?;(\d+)
+      replacement: $1:15090
+      target_label: __address__
+    - action: labelmap
+      regex: __meta_kubernetes_service_label_(.+)
+    - source_labels: [__meta_kubernetes_namespace]
+      action: replace
+      target_label: namespace
+    - source_labels: [__meta_kubernetes_service_name]
+      action: replace
+      target_label: service_name
+
+  # Cloud SQL Proxy metrics
+  - job_name: 'cloud-sql-proxy'
+    static_configs:
+    - targets: ['cloud-sql-proxy:9090']
+    scrape_interval: 30s
+
+  # GCP Monitoring Integration
+  - job_name: 'gcp-monitoring'
+    gce_sd_configs:
+    - project: PROJECT_ID
+      zone: us-central1-a
+      port: 9090
+    relabel_configs:
+    - source_labels: [__meta_gce_label_monitoring]
+      action: keep
+      regex: enabled
+
+  # Azure Monitor Integration (via Azure Monitor Exporter)
+  - job_name: 'azure-monitor'
+    static_configs:
+    - targets: ['azure-monitor-exporter:9276']
+    scrape_interval: 60s
+    metrics_path: /metrics
+
+  # Striim CDC metrics
+  - job_name: 'striim-cdc'
+    static_configs:
+    - targets: ['striim-server:9999']
+    scrape_interval: 30s
+    basic_auth:
+      username: admin
+      password_file: /etc/secrets/striim-password
+
+  # External health check endpoint
+  - job_name: 'external-health-check'
+    static_configs:
+    - targets: ['primary.example.com']
+    metrics_path: /healthz
+    scrape_interval: 10s
+    scrape_timeout: 5s
+    scheme: https
+
+# Recording rules for SLI calculations
+recording_rules:
+  # Availability SLI
+  - name: sli.availability
+    interval: 30s
+    rules:
+    - record: sli:availability:rate5m
+      expr: |
+        (
+          sum(rate(http_requests_total{job="dr-orchestrator",code!~"5.."}[5m])) /
+          sum(rate(http_requests_total{job="dr-orchestrator"}[5m]))
+        ) * 100
+
+    - record: sli:availability:rate1h
+      expr: |
+        (
+          sum(rate(http_requests_total{job="dr-orchestrator",code!~"5.."}[1h])) /
+          sum(rate(http_requests_total{job="dr-orchestrator"}[1h]))
+        ) * 100
+
+  # Latency SLI
+  - name: sli.latency
+    interval: 30s
+    rules:
+    - record: sli:latency:p95:5m
+      expr: |
+        histogram_quantile(0.95,
+          sum(rate(http_request_duration_seconds_bucket{job="dr-orchestrator"}[5m])) by (le)
+        ) * 1000
+
+    - record: sli:latency:p99:5m
+      expr: |
+        histogram_quantile(0.99,
+          sum(rate(http_request_duration_seconds_bucket{job="dr-orchestrator"}[5m])) by (le)
+        ) * 1000
+
+  # RTO Compliance SLI
+  - name: sli.rto_compliance
+    interval: 60s
+    rules:
+    - record: sli:rto_compliance:rate1h
+      expr: |
+        (
+          sum(increase(failover_success_total{rto_met="true"}[1h])) /
+          sum(increase(failover_attempts_total[1h]))
+        ) * 100
+
+  # Data Freshness SLI
+  - name: sli.data_freshness
+    interval: 30s
+    rules:
+    - record: sli:data_freshness:max
+      expr: |
+        max(data_replication_lag_seconds{job="striim-cdc"})
+
+  # Error Budget calculations
+  - name: slo.error_budget
+    interval: 300s
+    rules:
+    - record: slo:availability:error_budget_remaining
+      expr: |
+        (
+          1 - (
+            (1 - 0.999) -  # SLO target (99.9%)
+            (1 - (sli:availability:rate1h / 100))
+          ) / (1 - 0.999)
+        ) * 100
+
+    - record: slo:rto_compliance:error_budget_remaining
+      expr: |
+        (
+          1 - (
+            (1 - 0.95) -  # SLO target (95%)
+            (1 - (sli:rto_compliance:rate1h / 100))
+          ) / (1 - 0.95)
+        ) * 100
+
+# Alert rules
+alert_rules:
+  # Critical SLO violations
+  - name: slo.critical
+    rules:
+    - alert: AvailabilitySLOViolation
+      expr: sli:availability:rate5m < 99.5
+      for: 5m
+      labels:
+        severity: critical
+        service: dr-orchestrator
+        slo: availability
+      annotations:
+        summary: "DR Orchestrator availability SLO violation"
+        description: "Availability is {{ $value }}%, below the 99.9% SLO target"
+        runbook_url: "https://runbooks.company.com/dr-orchestrator/availability"
+
+    - alert: RTOComplianceSLOViolation
+      expr: sli:rto_compliance:rate1h < 90
+      for: 10m
+      labels:
+        severity: critical
+        service: dr-orchestrator
+        slo: rto_compliance
+      annotations:
+        summary: "DR Orchestrator RTO compliance SLO violation"
+        description: "RTO compliance is {{ $value }}%, below the 95% SLO target"
+        runbook_url: "https://runbooks.company.com/dr-orchestrator/rto"
+
+    - alert: ErrorBudgetExhausted
+      expr: slo:availability:error_budget_remaining < 10
+      for: 15m
+      labels:
+        severity: critical
+        service: dr-orchestrator
+        slo: error_budget
+      annotations:
+        summary: "DR Orchestrator error budget nearly exhausted"
+        description: "Error budget remaining: {{ $value }}%"
+        runbook_url: "https://runbooks.company.com/dr-orchestrator/error-budget"
+
+  # Warning alerts
+  - name: slo.warning
+    rules:
+    - alert: LatencyHigh
+      expr: sli:latency:p95:5m > 1000
+      for: 10m
+      labels:
+        severity: warning
+        service: dr-orchestrator
+        slo: latency
+      annotations:
+        summary: "DR Orchestrator high latency"
+        description: "95th percentile latency is {{ $value }}ms"
+
+    - alert: DataReplicationLagHigh
+      expr: sli:data_freshness:max > 60
+      for: 5m
+      labels:
+        severity: warning
+        service: dr-orchestrator
+        slo: data_freshness
+      annotations:
+        summary: "High data replication lag"
+        description: "Replication lag is {{ $value }} seconds"
+
+  # Infrastructure alerts
+  - name: infrastructure.critical
+    rules:
+    - alert: AzureHealthCheckFailing
+      expr: up{job="external-health-check"} == 0
+      for: 2m
+      labels:
+        severity: critical
+        service: azure-primary
+        component: health-check
+      annotations:
+        summary: "Azure primary environment health check failing"
+        description: "Azure health check has been failing for 2 minutes"
+        runbook_url: "https://runbooks.company.com/azure/health-check"
+
+    - alert: StriimCDCDown
+      expr: up{job="striim-cdc"} == 0
+      for: 1m
+      labels:
+        severity: critical
+        service: striim
+        component: cdc
+      annotations:
+        summary: "Striim CDC service down"
+        description: "Striim CDC service is unreachable"
+
+    - alert: HighCPUUsage
+      expr: (100 - (avg by (instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)) > 80
+      for: 10m
+      labels:
+        severity: warning
+        component: infrastructure
+      annotations:
+        summary: "High CPU usage detected"
+        description: "CPU usage is {{ $value }}% on {{ $labels.instance }}"
+
+    - alert: HighMemoryUsage
+      expr: ((node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes) * 100 > 90
+      for: 5m
+      labels:
+        severity: critical
+        component: infrastructure
+      annotations:
+        summary: "High memory usage detected"
+        description: "Memory usage is {{ $value }}% on {{ $labels.instance }}"
+
+  # Security alerts
+  - name: security.critical
+    rules:
+    - alert: UnauthorizedAPIAccess
+      expr: increase(istio_requests_total{response_code!~"2..|3.."}[5m]) > 10
+      for: 2m
+      labels:
+        severity: critical
+        component: security
+      annotations:
+        summary: "Potential unauthorized API access"
+        description: "High rate of non-2xx/3xx responses detected"
+
+    - alert: TLSCertificateExpiring
+      expr: (x509_cert_expiry - time()) / 86400 < 30
+      for: 1h
+      labels:
+        severity: warning
+        component: security
+      annotations:
+        summary: "TLS certificate expiring soon"
+        description: "Certificate expires in {{ $value }} days"
+
+# Remote storage configuration for long-term retention
+remote_write:
+  - url: "https://prometheus-remote-write.monitoring.svc.cluster.local/api/v1/write"
+    queue_config:
+      max_samples_per_send: 1000
+      max_shards: 10
+      capacity: 5000
+    write_relabel_configs:
+    - source_labels: [__name__]
+      regex: 'sli:.*|slo:.*|up|http_requests_total|http_request_duration_seconds.*'
+      action: keep
+
+remote_read:
+  - url: "https://prometheus-remote-read.monitoring.svc.cluster.local/api/v1/read"
+    read_recent: true

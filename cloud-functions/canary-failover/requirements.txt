@@ -1,0 +1,9 @@
+google-cloud-container>=2.20.0
+google-cloud-dns>=0.34.1
+google-cloud-secret-manager>=2.16.4
+google-cloud-monitoring>=2.15.1
+google-cloud-compute>=1.14.1
+google-cloud-pubsub>=2.18.4
+google-auth>=2.23.3
+requests>=2.31.0
+functions-framework>=3.4.0

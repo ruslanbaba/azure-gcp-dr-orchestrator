@@ -1,0 +1,590 @@
+# Striim Application Configuration for Azure SQL MI to GCP Cloud SQL CDC
+# Enterprise-grade real-time data replication pipeline
+
+# Main application configuration
+APPLICATION AzureToGcpDrReplication;
+
+# Import required adapters and libraries
+IMPORT STATIC com.webaction.utility.Utility.*;
+IMPORT STATIC com.webaction.source.SQLServer.*;
+IMPORT STATIC com.webaction.target.PostgreSQL.*;
+
+# Enterprise configuration parameters
+CREATE OR REPLACE GLOBAL CONSTANT String AZURE_SQL_MI_HOST = 'prod-dr-sql-mi-001.database.windows.net';
+CREATE OR REPLACE GLOBAL CONSTANT String AZURE_SQL_MI_PORT = '1433';
+CREATE OR REPLACE GLOBAL CONSTANT String AZURE_SQL_MI_DATABASE = 'EnterpriseProductionDB';
+CREATE OR REPLACE GLOBAL CONSTANT String AZURE_SQL_MI_USERNAME = 'sqladmin';
+CREATE OR REPLACE GLOBAL CONSTANT String AZURE_SQL_MI_PASSWORD = 'EnterprisePassword123!';
+
+CREATE OR REPLACE GLOBAL CONSTANT String GCP_CLOUD_SQL_HOST = '10.1.1.100';  # Private IP from GCP
+CREATE OR REPLACE GLOBAL CONSTANT String GCP_CLOUD_SQL_PORT = '5432';
+CREATE OR REPLACE GLOBAL CONSTANT String GCP_CLOUD_SQL_DATABASE = 'enterprise_app_db';
+CREATE OR REPLACE GLOBAL CONSTANT String GCP_CLOUD_SQL_USERNAME = 'postgres';
+CREATE OR REPLACE GLOBAL CONSTANT String GCP_CLOUD_SQL_PASSWORD = 'EnterprisePostgresPassword123!';
+
+# Replication settings
+CREATE OR REPLACE GLOBAL CONSTANT String REPLICATION_MODE = 'FULL_CDC';
+CREATE OR REPLACE GLOBAL CONSTANT Integer BATCH_SIZE = 1000;
+CREATE OR REPLACE GLOBAL CONSTANT Integer FLUSH_INTERVAL = 5000;  # 5 seconds
+CREATE OR REPLACE GLOBAL CONSTANT Integer CHECKPOINT_INTERVAL = 60000;  # 1 minute
+CREATE OR REPLACE GLOBAL CONSTANT String CHECKPOINT_TABLE = 'striim_checkpoint';
+
+# Enterprise monitoring settings
+CREATE OR REPLACE GLOBAL CONSTANT String MONITORING_INTERVAL = '30s';
+CREATE OR REPLACE GLOBAL CONSTANT String LOG_LEVEL = 'INFO';
+CREATE OR REPLACE GLOBAL CONSTANT Boolean ENABLE_DETAILED_LOGGING = true;
+CREATE OR REPLACE GLOBAL CONSTANT String METRICS_ENDPOINT = 'http://prometheus-server:9090';
+
+# Source stream - Azure SQL Managed Instance CDC
+CREATE SOURCE AzureSqlMiSource USING MSSqlReader (
+  ConnectionURL: 'jdbc:sqlserver://' + AZURE_SQL_MI_HOST + ':' + AZURE_SQL_MI_PORT + ';databaseName=' + AZURE_SQL_MI_DATABASE + ';encrypt=true;trustServerCertificate=false;hostNameInCertificate=*.database.windows.net;loginTimeout=30;',
+  Username: AZURE_SQL_MI_USERNAME,
+  Password: AZURE_SQL_MI_PASSWORD,
+  Tables: 'dbo.customers,dbo.orders,dbo.products,dbo.inventory,dbo.transactions,dbo.user_sessions,dbo.audit_logs,dbo.configurations',
+  
+  # CDC-specific configuration
+  CDCConfigTable: 'dbo.' + CHECKPOINT_TABLE,
+  StartPosition: 'LATEST',
+  
+  # Performance tuning
+  FetchSize: BATCH_SIZE,
+  FlushInterval: FLUSH_INTERVAL,
+  CheckpointTableInterval: CHECKPOINT_INTERVAL,
+  
+  # Enterprise security
+  TrustStore: '/opt/striim/ssl/azure-truststore.jks',
+  TrustStorePassword: 'EnterpriseStriimTrustStore123!',
+  
+  # Monitoring and alerting
+  MonitoringInterval: MONITORING_INTERVAL,
+  EnableDetailedLogging: ENABLE_DETAILED_LOGGING,
+  
+  # Error handling
+  ExceptionHandler: 'com.webaction.recovery.DefaultExceptionHandler',
+  RetryPolicy: 'EXPONENTIAL_BACKOFF',
+  MaxRetries: 3,
+  RetryDelay: '10s',
+  
+  # Connection pooling
+  MaxConnections: 10,
+  MinConnections: 2,
+  ConnectionTimeout: 30000,
+  IdleTimeout: 300000
+)
+OUTPUT TO AzureSourceStream;
+
+# Transformation stream for data type mapping and enrichment
+CREATE CQ DataTransformationCQ AS 
+SELECT 
+  # Standard fields
+  data[0] AS operation_type,
+  data[1] AS table_name,
+  data[2] AS schema_name,
+  TO_STRING(data[3]) AS transaction_id,
+  TO_TIMESTAMP(data[4]) AS event_timestamp,
+  
+  # Transform Azure SQL data types to PostgreSQL compatible types
+  CASE 
+    WHEN table_name = 'customers' THEN MapCustomerFields(data[5])
+    WHEN table_name = 'orders' THEN MapOrderFields(data[5])
+    WHEN table_name = 'products' THEN MapProductFields(data[5])
+    WHEN table_name = 'inventory' THEN MapInventoryFields(data[5])
+    WHEN table_name = 'transactions' THEN MapTransactionFields(data[5])
+    WHEN table_name = 'user_sessions' THEN MapSessionFields(data[5])
+    WHEN table_name = 'audit_logs' THEN MapAuditFields(data[5])
+    WHEN table_name = 'configurations' THEN MapConfigFields(data[5])
+    ELSE data[5]
+  END AS transformed_data,
+  
+  # Add enterprise metadata
+  'azure-sql-mi' AS source_system,
+  'gcp-cloud-sql' AS target_system,
+  'striim-cdc' AS replication_method,
+  UUID() AS correlation_id,
+  CURRENT_TIMESTAMP AS processing_timestamp,
+  
+  # Data quality checks
+  ValidateDataIntegrity(data[5], table_name) AS data_quality_score,
+  CheckBusinessRules(data[5], table_name) AS business_rule_status
+  
+FROM AzureSourceStream
+WHERE 
+  # Filter out system tables and test data
+  schema_name = 'dbo' 
+  AND table_name NOT LIKE '%_temp'
+  AND table_name NOT LIKE 'test_%'
+  AND operation_type IN ('INSERT', 'UPDATE', 'DELETE');
+
+# Validation and enrichment stream
+CREATE CQ ValidationCQ AS
+SELECT 
+  *,
+  # Add enterprise validation
+  CASE 
+    WHEN data_quality_score >= 0.95 THEN 'PASSED'
+    WHEN data_quality_score >= 0.80 THEN 'WARNING'
+    ELSE 'FAILED'
+  END AS validation_status,
+  
+  # Add conflict resolution
+  ResolveConflicts(transformed_data, table_name, operation_type) AS conflict_resolution,
+  
+  # Add partitioning information for target
+  GetTargetPartition(table_name, transformed_data) AS target_partition,
+  
+  # Enterprise audit trail
+  JSON_OBJECT(
+    'source_host', AZURE_SQL_MI_HOST,
+    'source_database', AZURE_SQL_MI_DATABASE,
+    'target_host', GCP_CLOUD_SQL_HOST,
+    'target_database', GCP_CLOUD_SQL_DATABASE,
+    'replication_lag', CURRENT_TIMESTAMP - event_timestamp,
+    'data_size_bytes', LENGTH(TO_STRING(transformed_data))
+  ) AS audit_metadata
+  
+FROM DataTransformationCQ
+WHERE validation_status != 'FAILED';
+
+# Error handling stream for failed validations
+CREATE CQ ErrorHandlingCQ AS
+SELECT 
+  *,
+  'VALIDATION_FAILED' AS error_type,
+  'Data quality score below threshold: ' + TO_STRING(data_quality_score) AS error_message,
+  CURRENT_TIMESTAMP AS error_timestamp
+FROM DataTransformationCQ
+WHERE data_quality_score < 0.80;
+
+# Target stream - GCP Cloud SQL (PostgreSQL)
+CREATE TARGET GcpCloudSqlTarget USING PostgreSQLWriter (
+  ConnectionURL: 'jdbc:postgresql://' + GCP_CLOUD_SQL_HOST + ':' + GCP_CLOUD_SQL_PORT + '/' + GCP_CLOUD_SQL_DATABASE + '?sslmode=require&sslcert=/opt/striim/ssl/gcp-client-cert.pem&sslkey=/opt/striim/ssl/gcp-client-key.pem&sslrootcert=/opt/striim/ssl/gcp-ca-cert.pem',
+  Username: GCP_CLOUD_SQL_USERNAME,
+  Password: GCP_CLOUD_SQL_PASSWORD,
+  
+  # Table mapping configuration
+  Tables: 'public.customers,public.orders,public.products,public.inventory,public.transactions,public.user_sessions,public.audit_logs,public.configurations',
+  
+  # Performance settings
+  BatchSize: BATCH_SIZE,
+  CommitInterval: FLUSH_INTERVAL,
+  ParallelThreads: 8,
+  
+  # Enterprise features
+  ConflictResolution: 'TIMESTAMP_BASED',
+  CheckDuplicates: true,
+  EnableCompression: true,
+  
+  # Error handling
+  IgnoreInvalidData: false,
+  OnError: 'RETRY_AND_LOG',
+  MaxRetries: 5,
+  RetryDelay: '15s',
+  
+  # Monitoring
+  StatisticsInterval: 30000,
+  EnableMetrics: true,
+  MetricsEndpoint: METRICS_ENDPOINT,
+  
+  # Connection settings
+  MaxConnections: 20,
+  MinConnections: 5,
+  ConnectionTimeout: 45000,
+  SocketTimeout: 60000,
+  
+  # Transaction settings
+  AutoCommit: false,
+  TransactionIsolation: 'READ_COMMITTED',
+  PreparedStatementCacheSize: 100
+);
+
+# Main data flow
+INSERT INTO GcpCloudSqlTarget 
+SELECT 
+  operation_type,
+  'public.' + table_name AS target_table,
+  transformed_data,
+  correlation_id,
+  audit_metadata
+FROM ValidationCQ;
+
+# Error logging target
+CREATE TARGET ErrorLogTarget USING FileWriter (
+  Directory: '/opt/striim/logs/errors/',
+  FileName: 'dr_replication_errors',
+  RolloverPeriod: '1h',
+  CompressionEnabled: true
+);
+
+INSERT INTO ErrorLogTarget 
+SELECT 
+  TO_STRING(JSON_OBJECT(
+    'timestamp', error_timestamp,
+    'error_type', error_type,
+    'error_message', error_message,
+    'table_name', table_name,
+    'transaction_id', transaction_id,
+    'correlation_id', correlation_id,
+    'data_quality_score', data_quality_score,
+    'raw_data', TO_STRING(data)
+  ))
+FROM ErrorHandlingCQ;
+
+# Metrics collection for monitoring
+CREATE TARGET MetricsTarget USING KafkaWriter (
+  brokerAddress: 'kafka-cluster:9092',
+  Topic: 'striim-dr-metrics',
+  PartitionKey: 'table_name',
+  
+  # Security
+  SecurityProtocol: 'SASL_SSL',
+  SaslMechanism: 'SCRAM-SHA-256',
+  SaslUsername: 'striim-metrics',
+  SaslPassword: 'EnterpriseKafkaPassword123!',
+  
+  # Performance
+  BatchSize: 100,
+  LingerMs: 1000,
+  CompressionType: 'gzip'
+);
+
+INSERT INTO MetricsTarget 
+SELECT 
+  TO_STRING(JSON_OBJECT(
+    'metric_type', 'replication_event',
+    'timestamp', processing_timestamp,
+    'source_system', source_system,
+    'target_system', target_system,
+    'table_name', table_name,
+    'operation_type', operation_type,
+    'replication_lag_ms', EXTRACT(EPOCH FROM (processing_timestamp - event_timestamp)) * 1000,
+    'data_size_bytes', LENGTH(TO_STRING(transformed_data)),
+    'validation_status', validation_status,
+    'data_quality_score', data_quality_score,
+    'partition', target_partition
+  ))
+FROM ValidationCQ;
+
+# Health check stream
+CREATE SOURCE HealthCheckSource USING PeriodicSource (
+  Interval: '30s'
+) 
+OUTPUT TO HealthCheckStream;
+
+CREATE CQ HealthCheckCQ AS
+SELECT 
+  CURRENT_TIMESTAMP AS check_timestamp,
+  'striim_health_check' AS metric_type,
+  CheckSourceConnection() AS source_healthy,
+  CheckTargetConnection() AS target_healthy,
+  GetReplicationLag() AS current_lag_seconds,
+  GetThroughputMetrics() AS throughput_metrics,
+  GetErrorRate() AS error_rate_percent
+FROM HealthCheckStream;
+
+INSERT INTO MetricsTarget 
+SELECT 
+  TO_STRING(JSON_OBJECT(
+    'metric_type', metric_type,
+    'timestamp', check_timestamp,
+    'source_healthy', source_healthy,
+    'target_healthy', target_healthy,
+    'replication_lag_seconds', current_lag_seconds,
+    'throughput_metrics', throughput_metrics,
+    'error_rate_percent', error_rate_percent,
+    'application_name', 'AzureToGcpDrReplication'
+  ))
+FROM HealthCheckCQ;
+
+# User-defined functions for data transformation
+
+# Customer data transformation
+CREATE FUNCTION MapCustomerFields(Object[] data) RETURNS Object[] AS
+BEGIN
+  RETURN JSON_OBJECT(
+    'customer_id', data[0],
+    'first_name', UPPER(TO_STRING(data[1])),
+    'last_name', UPPER(TO_STRING(data[2])),
+    'email', LOWER(TO_STRING(data[3])),
+    'phone', REGEXP_REPLACE(TO_STRING(data[4]), '[^0-9]', ''),
+    'address', data[5],
+    'city', data[6],
+    'state', data[7],
+    'zip_code', data[8],
+    'country', COALESCE(data[9], 'US'),
+    'created_date', data[10],
+    'updated_date', CURRENT_TIMESTAMP,
+    'status', COALESCE(data[11], 'ACTIVE')
+  );
+END;
+
+# Order data transformation
+CREATE FUNCTION MapOrderFields(Object[] data) RETURNS Object[] AS
+BEGIN
+  RETURN JSON_OBJECT(
+    'order_id', data[0],
+    'customer_id', data[1],
+    'order_date', data[2],
+    'total_amount', ROUND(CAST(data[3] AS DOUBLE), 2),
+    'currency', COALESCE(data[4], 'USD'),
+    'status', data[5],
+    'shipping_address', data[6],
+    'billing_address', data[7],
+    'payment_method', data[8],
+    'discount_amount', COALESCE(ROUND(CAST(data[9] AS DOUBLE), 2), 0.00),
+    'tax_amount', ROUND(CAST(data[10] AS DOUBLE), 2),
+    'shipping_cost', ROUND(CAST(data[11] AS DOUBLE), 2),
+    'updated_date', CURRENT_TIMESTAMP
+  );
+END;
+
+# Product data transformation
+CREATE FUNCTION MapProductFields(Object[] data) RETURNS Object[] AS
+BEGIN
+  RETURN JSON_OBJECT(
+    'product_id', data[0],
+    'name', data[1],
+    'description', data[2],
+    'category', data[3],
+    'price', ROUND(CAST(data[4] AS DOUBLE), 2),
+    'cost', ROUND(CAST(data[5] AS DOUBLE), 2),
+    'weight', CAST(data[6] AS DOUBLE),
+    'dimensions', data[7],
+    'status', COALESCE(data[8], 'ACTIVE'),
+    'created_date', data[9],
+    'updated_date', CURRENT_TIMESTAMP
+  );
+END;
+
+# Inventory data transformation
+CREATE FUNCTION MapInventoryFields(Object[] data) RETURNS Object[] AS
+BEGIN
+  RETURN JSON_OBJECT(
+    'inventory_id', data[0],
+    'product_id', data[1],
+    'location_id', data[2],
+    'quantity_on_hand', CAST(data[3] AS INTEGER),
+    'quantity_reserved', CAST(data[4] AS INTEGER),
+    'quantity_available', CAST(data[3] AS INTEGER) - CAST(data[4] AS INTEGER),
+    'reorder_point', CAST(data[5] AS INTEGER),
+    'max_stock', CAST(data[6] AS INTEGER),
+    'last_counted', data[7],
+    'updated_date', CURRENT_TIMESTAMP
+  );
+END;
+
+# Transaction data transformation
+CREATE FUNCTION MapTransactionFields(Object[] data) RETURNS Object[] AS
+BEGIN
+  RETURN JSON_OBJECT(
+    'transaction_id', data[0],
+    'order_id', data[1],
+    'payment_id', data[2],
+    'amount', ROUND(CAST(data[3] AS DOUBLE), 2),
+    'currency', COALESCE(data[4], 'USD'),
+    'transaction_type', data[5],
+    'status', data[6],
+    'gateway_response', data[7],
+    'processed_date', data[8],
+    'settled_date', data[9],
+    'created_date', data[10],
+    'updated_date', CURRENT_TIMESTAMP
+  );
+END;
+
+# Session data transformation
+CREATE FUNCTION MapSessionFields(Object[] data) RETURNS Object[] AS
+BEGIN
+  RETURN JSON_OBJECT(
+    'session_id', data[0],
+    'user_id', data[1],
+    'device_id', data[2],
+    'ip_address', data[3],
+    'user_agent', data[4],
+    'start_time', data[5],
+    'end_time', data[6],
+    'duration_seconds', EXTRACT(EPOCH FROM (CAST(data[6] AS TIMESTAMP) - CAST(data[5] AS TIMESTAMP))),
+    'pages_viewed', CAST(data[7] AS INTEGER),
+    'actions_taken', CAST(data[8] AS INTEGER),
+    'referrer', data[9],
+    'status', COALESCE(data[10], 'ACTIVE'),
+    'created_date', data[11],
+    'updated_date', CURRENT_TIMESTAMP
+  );
+END;
+
+# Audit log transformation
+CREATE FUNCTION MapAuditFields(Object[] data) RETURNS Object[] AS
+BEGIN
+  RETURN JSON_OBJECT(
+    'audit_id', data[0],
+    'table_name', data[1],
+    'operation_type', data[2],
+    'user_id', data[3],
+    'timestamp', data[4],
+    'old_values', data[5],
+    'new_values', data[6],
+    'ip_address', data[7],
+    'session_id', data[8],
+    'application', COALESCE(data[9], 'enterprise-app'),
+    'created_date', CURRENT_TIMESTAMP
+  );
+END;
+
+# Configuration data transformation
+CREATE FUNCTION MapConfigFields(Object[] data) RETURNS Object[] AS
+BEGIN
+  RETURN JSON_OBJECT(
+    'config_id', data[0],
+    'module', data[1],
+    'key', data[2],
+    'value', data[3],
+    'data_type', data[4],
+    'description', data[5],
+    'is_encrypted', COALESCE(CAST(data[6] AS BOOLEAN), false),
+    'is_active', COALESCE(CAST(data[7] AS BOOLEAN), true),
+    'created_by', data[8],
+    'created_date', data[9],
+    'updated_by', data[10],
+    'updated_date', CURRENT_TIMESTAMP
+  );
+END;
+
+# Data validation function
+CREATE FUNCTION ValidateDataIntegrity(Object[] data, String tableName) RETURNS DOUBLE AS
+BEGIN
+  DECLARE score DOUBLE = 1.0;
+  
+  # Check for null primary keys
+  IF (tableName = 'customers' AND data[0] IS NULL) OR
+     (tableName = 'orders' AND data[0] IS NULL) OR
+     (tableName = 'products' AND data[0] IS NULL) THEN
+    score = score - 0.5;
+  END IF;
+  
+  # Check for valid email format (customers table)
+  IF tableName = 'customers' AND data[3] IS NOT NULL AND 
+     NOT REGEXP_LIKE(TO_STRING(data[3]), '^[A-Za-z0-9+_.-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$') THEN
+    score = score - 0.2;
+  END IF;
+  
+  # Check for negative amounts (orders, transactions)
+  IF (tableName = 'orders' OR tableName = 'transactions') AND 
+     data[3] IS NOT NULL AND CAST(data[3] AS DOUBLE) < 0 THEN
+    score = score - 0.3;
+  END IF;
+  
+  # Check for future dates
+  IF data[10] IS NOT NULL AND CAST(data[10] AS TIMESTAMP) > CURRENT_TIMESTAMP THEN
+    score = score - 0.1;
+  END IF;
+  
+  RETURN score;
+END;
+
+# Business rules validation
+CREATE FUNCTION CheckBusinessRules(Object[] data, String tableName) RETURNS String AS
+BEGIN
+  # Customer business rules
+  IF tableName = 'customers' THEN
+    IF data[3] IS NULL OR LENGTH(TO_STRING(data[3])) = 0 THEN
+      RETURN 'FAILED: Email required';
+    END IF;
+    IF data[4] IS NOT NULL AND LENGTH(REGEXP_REPLACE(TO_STRING(data[4]), '[^0-9]', '')) < 10 THEN
+      RETURN 'WARNING: Phone number too short';
+    END IF;
+  END IF;
+  
+  # Order business rules
+  IF tableName = 'orders' THEN
+    IF CAST(data[3] AS DOUBLE) <= 0 THEN
+      RETURN 'FAILED: Order amount must be positive';
+    END IF;
+    IF CAST(data[3] AS DOUBLE) > 50000 THEN
+      RETURN 'WARNING: High value order requires approval';
+    END IF;
+  END IF;
+  
+  # Product business rules
+  IF tableName = 'products' THEN
+    IF CAST(data[4] AS DOUBLE) <= CAST(data[5] AS DOUBLE) THEN
+      RETURN 'WARNING: Price lower than cost';
+    END IF;
+  END IF;
+  
+  RETURN 'PASSED';
+END;
+
+# Conflict resolution function
+CREATE FUNCTION ResolveConflicts(Object[] data, String tableName, String operationType) RETURNS String AS
+BEGIN
+  # Timestamp-based conflict resolution
+  IF operationType = 'UPDATE' THEN
+    RETURN 'LAST_WRITE_WINS';
+  END IF;
+  
+  # Delete operations take precedence
+  IF operationType = 'DELETE' THEN
+    RETURN 'DELETE_WINS';
+  END IF;
+  
+  RETURN 'NO_CONFLICT';
+END;
+
+# Partitioning strategy function
+CREATE FUNCTION GetTargetPartition(String tableName, Object[] data) RETURNS String AS
+BEGIN
+  IF tableName = 'orders' OR tableName = 'transactions' THEN
+    # Partition by month
+    RETURN TO_STRING(YEAR(CAST(data[2] AS TIMESTAMP))) + '_' + 
+           LPAD(TO_STRING(MONTH(CAST(data[2] AS TIMESTAMP))), 2, '0');
+  END IF;
+  
+  IF tableName = 'customers' THEN
+    # Partition by region (based on state)
+    DECLARE state STRING = TO_STRING(data[7]);
+    IF state IN ('CA', 'WA', 'OR', 'NV', 'AZ') THEN
+      RETURN 'west';
+    ELSEIF state IN ('NY', 'NJ', 'CT', 'MA', 'PA') THEN
+      RETURN 'east';
+    ELSEIF state IN ('TX', 'FL', 'GA', 'NC', 'SC') THEN
+      RETURN 'south';
+    ELSE
+      RETURN 'central';
+    END IF;
+  END IF;
+  
+  RETURN 'default';
+END;
+
+# Connection health check functions
+CREATE FUNCTION CheckSourceConnection() RETURNS BOOLEAN AS
+BEGIN
+  # Implement source connection health check
+  RETURN true;  # Placeholder
+END;
+
+CREATE FUNCTION CheckTargetConnection() RETURNS BOOLEAN AS
+BEGIN
+  # Implement target connection health check
+  RETURN true;  # Placeholder
+END;
+
+CREATE FUNCTION GetReplicationLag() RETURNS INTEGER AS
+BEGIN
+  # Calculate current replication lag in seconds
+  RETURN 5;  # Placeholder
+END;
+
+CREATE FUNCTION GetThroughputMetrics() RETURNS String AS
+BEGIN
+  # Return JSON string with throughput metrics
+  RETURN '{"events_per_second": 150, "bytes_per_second": 50000}';
+END;
+
+CREATE FUNCTION GetErrorRate() RETURNS DOUBLE AS
+BEGIN
+  # Calculate current error rate percentage
+  RETURN 0.1;  # Placeholder
+END;
+
+END APPLICATION AzureToGcpDrReplication;

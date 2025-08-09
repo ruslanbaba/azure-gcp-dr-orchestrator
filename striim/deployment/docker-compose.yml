@@ -1,0 +1,557 @@
+# Striim Cluster Deployment Configuration
+# Enterprise-grade CDC platform for Azure to GCP DR orchestration
+
+version: '3.8'
+
+services:
+  # Striim Server Cluster
+  striim-node1:
+    image: striim/striim:4.2.0-enterprise
+    hostname: striim-node1
+    container_name: striim-node1
+    ports:
+      - "9080:9080"    # Web UI
+      - "9443:9443"    # Secure Web UI
+      - "9997:9997"    # Server port
+      - "5701:5701"    # Hazelcast
+    environment:
+      # Cluster configuration
+      STRIIM_NODE_TYPE: "server"
+      STRIIM_CLUSTER_NAME: "enterprise-dr-cluster"
+      STRIIM_NODE_NAME: "striim-node1"
+      STRIIM_SERVER_NAME: "striim-node1"
+      
+      # Database configuration
+      STRIIM_DB_TYPE: "derby"
+      STRIIM_DB_LOCATION: "/opt/striim/data/derby"
+      
+      # Enterprise security
+      STRIIM_ENABLE_SSL: "true"
+      STRIIM_SSL_KEYSTORE: "/opt/striim/ssl/server.keystore"
+      STRIIM_SSL_KEYSTORE_PASSWORD: "EnterpriseStriimKeystore123!"
+      STRIIM_SSL_TRUSTSTORE: "/opt/striim/ssl/server.truststore"
+      STRIIM_SSL_TRUSTSTORE_PASSWORD: "EnterpriseStriimTruststore123!"
+      
+      # Authentication
+      STRIIM_ENABLE_LDAP: "true"
+      STRIIM_LDAP_URL: "ldaps://enterprise-ldap.company.com:636"
+      STRIIM_LDAP_BASE_DN: "dc=company,dc=com"
+      STRIIM_LDAP_USER_DN: "ou=users,dc=company,dc=com"
+      STRIIM_LDAP_ADMIN_USER: "striim-admin"
+      
+      # JVM settings
+      STRIIM_HEAP_SIZE: "8g"
+      STRIIM_METASPACE_SIZE: "512m"
+      STRIIM_GC_TYPE: "G1"
+      
+      # Performance tuning
+      STRIIM_CACHE_SIZE: "2g"
+      STRIIM_BUFFER_SIZE: "1048576"
+      STRIIM_BATCH_SIZE: "1000"
+      STRIIM_FLUSH_INTERVAL: "5000"
+      
+      # Enterprise monitoring
+      STRIIM_ENABLE_JMX: "true"
+      STRIIM_JMX_PORT: "9999"
+      STRIIM_ENABLE_PROMETHEUS: "true"
+      STRIIM_PROMETHEUS_PORT: "8090"
+      
+      # Logging
+      STRIIM_LOG_LEVEL: "INFO"
+      STRIIM_LOG_DIR: "/opt/striim/logs"
+      STRIIM_LOG_MAX_SIZE: "100MB"
+      STRIIM_LOG_MAX_FILES: "10"
+      
+    volumes:
+      # Persistent data
+      - striim_data:/opt/striim/data
+      - striim_logs:/opt/striim/logs
+      - striim_config:/opt/striim/conf
+      
+      # SSL certificates
+      - ./ssl/striim:/opt/striim/ssl:ro
+      
+      # Application configurations
+      - ./applications:/opt/striim/applications:ro
+      
+      # Custom libraries
+      - ./lib:/opt/striim/lib/custom:ro
+      
+      # JDBC drivers
+      - ./jdbc-drivers:/opt/striim/lib/jdbc:ro
+      
+    networks:
+      - striim-network
+      - monitoring-network
+      - azure-network
+      - gcp-network
+      
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+      
+    restart: unless-stopped
+    
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'
+          memory: 12G
+        reservations:
+          cpus: '2.0'
+          memory: 8G
+    
+    depends_on:
+      - striim-metadb
+      - kafka-cluster
+      - zookeeper
+      
+  # Striim Agent Node for high availability
+  striim-node2:
+    image: striim/striim:4.2.0-enterprise
+    hostname: striim-node2
+    container_name: striim-node2
+    ports:
+      - "9081:9080"
+      - "9444:9443"
+      - "9998:9997"
+      - "5702:5701"
+    environment:
+      STRIIM_NODE_TYPE: "server"
+      STRIIM_CLUSTER_NAME: "enterprise-dr-cluster"
+      STRIIM_NODE_NAME: "striim-node2"
+      STRIIM_SERVER_NAME: "striim-node2"
+      STRIIM_CLUSTER_MEMBER: "striim-node1:5701"
+      
+      # Same configuration as node1 but different ports
+      STRIIM_DB_TYPE: "derby"
+      STRIIM_DB_LOCATION: "/opt/striim/data/derby"
+      STRIIM_ENABLE_SSL: "true"
+      STRIIM_SSL_KEYSTORE: "/opt/striim/ssl/server.keystore"
+      STRIIM_SSL_KEYSTORE_PASSWORD: "EnterpriseStriimKeystore123!"
+      STRIIM_SSL_TRUSTSTORE: "/opt/striim/ssl/server.truststore"
+      STRIIM_SSL_TRUSTSTORE_PASSWORD: "EnterpriseStriimTruststore123!"
+      STRIIM_ENABLE_LDAP: "true"
+      STRIIM_LDAP_URL: "ldaps://enterprise-ldap.company.com:636"
+      STRIIM_LDAP_BASE_DN: "dc=company,dc=com"
+      STRIIM_LDAP_USER_DN: "ou=users,dc=company,dc=com"
+      STRIIM_LDAP_ADMIN_USER: "striim-admin"
+      STRIIM_HEAP_SIZE: "8g"
+      STRIIM_METASPACE_SIZE: "512m"
+      STRIIM_GC_TYPE: "G1"
+      STRIIM_CACHE_SIZE: "2g"
+      STRIIM_BUFFER_SIZE: "1048576"
+      STRIIM_BATCH_SIZE: "1000"
+      STRIIM_FLUSH_INTERVAL: "5000"
+      STRIIM_ENABLE_JMX: "true"
+      STRIIM_JMX_PORT: "9999"
+      STRIIM_ENABLE_PROMETHEUS: "true"
+      STRIIM_PROMETHEUS_PORT: "8090"
+      STRIIM_LOG_LEVEL: "INFO"
+      STRIIM_LOG_DIR: "/opt/striim/logs"
+      STRIIM_LOG_MAX_SIZE: "100MB"
+      STRIIM_LOG_MAX_FILES: "10"
+      
+    volumes:
+      - striim_data_node2:/opt/striim/data
+      - striim_logs_node2:/opt/striim/logs
+      - striim_config:/opt/striim/conf
+      - ./ssl/striim:/opt/striim/ssl:ro
+      - ./applications:/opt/striim/applications:ro
+      - ./lib:/opt/striim/lib/custom:ro
+      - ./jdbc-drivers:/opt/striim/lib/jdbc:ro
+      
+    networks:
+      - striim-network
+      - monitoring-network
+      - azure-network
+      - gcp-network
+      
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+      
+    restart: unless-stopped
+    
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'
+          memory: 12G
+        reservations:
+          cpus: '2.0'
+          memory: 8G
+    
+    depends_on:
+      - striim-node1
+      - striim-metadb
+      - kafka-cluster
+      
+  # Striim Metadata Database (PostgreSQL)
+  striim-metadb:
+    image: postgres:15-alpine
+    hostname: striim-metadb
+    container_name: striim-metadb
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_DB: striim_metadata
+      POSTGRES_USER: striim_admin
+      POSTGRES_PASSWORD: EnterpriseStriimMetaDB123!
+      POSTGRES_INITDB_ARGS: "--auth-host=md5"
+      
+    volumes:
+      - striim_metadb_data:/var/lib/postgresql/data
+      - ./sql/init:/docker-entrypoint-initdb.d:ro
+      
+    networks:
+      - striim-network
+      
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U striim_admin -d striim_metadata"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      
+    restart: unless-stopped
+    
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+        reservations:
+          cpus: '1.0'
+          memory: 2G
+          
+  # Apache Kafka for event streaming
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.4.0
+    hostname: zookeeper
+    container_name: zookeeper
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+      ZOOKEEPER_INIT_LIMIT: 5
+      ZOOKEEPER_SYNC_LIMIT: 2
+      ZOOKEEPER_MAX_CLIENT_CNXNS: 0
+      ZOOKEEPER_LOG4J_ROOT_LOGLEVEL: INFO
+      
+    volumes:
+      - zookeeper_data:/var/lib/zookeeper/data
+      - zookeeper_logs:/var/lib/zookeeper/log
+      
+    networks:
+      - striim-network
+      - monitoring-network
+      
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "2181"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      
+    restart: unless-stopped
+
+  kafka-cluster:
+    image: confluentinc/cp-kafka:7.4.0
+    hostname: kafka-cluster
+    container_name: kafka-cluster
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-cluster:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_CONFLUENT_SCHEMA_REGISTRY_URL: http://schema-registry:8081
+      
+      # Performance tuning
+      KAFKA_NUM_NETWORK_THREADS: 8
+      KAFKA_NUM_IO_THREADS: 8
+      KAFKA_SOCKET_SEND_BUFFER_BYTES: 102400
+      KAFKA_SOCKET_RECEIVE_BUFFER_BYTES: 102400
+      KAFKA_SOCKET_REQUEST_MAX_BYTES: 104857600
+      KAFKA_NUM_PARTITIONS: 8
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 1
+      KAFKA_LOG_RETENTION_HOURS: 168
+      KAFKA_LOG_SEGMENT_BYTES: 1073741824
+      KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS: 300000
+      KAFKA_LOG_CLEANUP_POLICY: delete
+      
+      # JVM settings
+      KAFKA_HEAP_OPTS: "-Xmx2G -Xms2G"
+      KAFKA_JVM_PERFORMANCE_OPTS: "-server -XX:+UseG1GC -XX:MaxGCPauseMillis=20 -XX:InitiatingHeapOccupancyPercent=35 -XX:+ExplicitGCInvokesConcurrent -Djava.awt.headless=true"
+      
+      # Monitoring
+      KAFKA_JMX_PORT: 9101
+      KAFKA_JMX_OPTS: "-Dcom.sun.management.jmxremote -Dcom.sun.management.jmxremote.authenticate=false -Dcom.sun.management.jmxremote.ssl=false -Dcom.sun.management.jmxremote.local.only=false -Dcom.sun.management.jmxremote.rmi.port=9101"
+      
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+      - kafka_logs:/var/lib/kafka/logs
+      
+    networks:
+      - striim-network
+      - monitoring-network
+      
+    healthcheck:
+      test: ["CMD", "kafka-topics", "--bootstrap-server", "localhost:9092", "--list"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+      
+    restart: unless-stopped
+    
+    depends_on:
+      - zookeeper
+      
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+        reservations:
+          cpus: '1.0'
+          memory: 2G
+
+  # Schema Registry for Kafka
+  schema-registry:
+    image: confluentinc/cp-schema-registry:7.4.0
+    hostname: schema-registry
+    container_name: schema-registry
+    ports:
+      - "8081:8081"
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: kafka-cluster:29092
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+      
+    networks:
+      - striim-network
+      - monitoring-network
+      
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/subjects"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      
+    restart: unless-stopped
+    
+    depends_on:
+      - kafka-cluster
+
+  # Prometheus for metrics collection
+  prometheus:
+    image: prom/prometheus:v2.40.7
+    hostname: prometheus-server
+    container_name: prometheus-server
+    ports:
+      - "9090:9090"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+      - '--web.enable-admin-api'
+      
+    volumes:
+      - ./monitoring/prometheus:/etc/prometheus:ro
+      - prometheus_data:/prometheus
+      
+    networks:
+      - monitoring-network
+      - striim-network
+      
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      
+    restart: unless-stopped
+
+  # Grafana for visualization
+  grafana:
+    image: grafana/grafana:9.5.2
+    hostname: grafana
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: EnterpriseGrafanaAdmin123!
+      GF_INSTALL_PLUGINS: grafana-piechart-panel,grafana-clock-panel
+      GF_SERVER_ROOT_URL: http://localhost:3000/
+      GF_SECURITY_ALLOW_EMBEDDING: true
+      
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      
+    networks:
+      - monitoring-network
+      
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      
+    restart: unless-stopped
+    
+    depends_on:
+      - prometheus
+
+  # Load balancer for Striim cluster
+  striim-lb:
+    image: nginx:1.24-alpine
+    hostname: striim-lb
+    container_name: striim-lb
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl/nginx:/etc/nginx/ssl:ro
+      
+    networks:
+      - striim-network
+      
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      
+    restart: unless-stopped
+    
+    depends_on:
+      - striim-node1
+      - striim-node2
+
+# Persistent volumes
+volumes:
+  striim_data:
+    driver: local
+    driver_opts:
+      type: none
+      device: /opt/docker/striim/data/node1
+      o: bind
+      
+  striim_data_node2:
+    driver: local
+    driver_opts:
+      type: none
+      device: /opt/docker/striim/data/node2
+      o: bind
+      
+  striim_logs:
+    driver: local
+    driver_opts:
+      type: none
+      device: /opt/docker/striim/logs/node1
+      o: bind
+      
+  striim_logs_node2:
+    driver: local
+    driver_opts:
+      type: none
+      device: /opt/docker/striim/logs/node2
+      o: bind
+      
+  striim_config:
+    driver: local
+    driver_opts:
+      type: none
+      device: /opt/docker/striim/config
+      o: bind
+      
+  striim_metadb_data:
+    driver: local
+    driver_opts:
+      type: none
+      device: /opt/docker/striim/metadb
+      o: bind
+      
+  kafka_data:
+    driver: local
+    driver_opts:
+      type: none
+      device: /opt/docker/kafka/data
+      o: bind
+      
+  kafka_logs:
+    driver: local
+    driver_opts:
+      type: none
+      device: /opt/docker/kafka/logs
+      o: bind
+      
+  zookeeper_data:
+    driver: local
+    driver_opts:
+      type: none
+      device: /opt/docker/zookeeper/data
+      o: bind
+      
+  zookeeper_logs:
+    driver: local
+    driver_opts:
+      type: none
+      device: /opt/docker/zookeeper/logs
+      o: bind
+      
+  prometheus_data:
+    driver: local
+    driver_opts:
+      type: none
+      device: /opt/docker/prometheus/data
+      o: bind
+      
+  grafana_data:
+    driver: local
+    driver_opts:
+      type: none
+      device: /opt/docker/grafana/data
+      o: bind
+
+# Networks
+networks:
+  striim-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+          gateway: 172.20.0.1
+    
+  monitoring-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.21.0.0/16
+          gateway: 172.21.0.1
+    
+  azure-network:
+    driver: bridge
+    external: true
+    
+  gcp-network:
+    driver: bridge
+    external: true

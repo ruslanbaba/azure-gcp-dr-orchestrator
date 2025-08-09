@@ -1,0 +1,287 @@
+groups:
+  - name: dr_orchestrator_critical
+    interval: 30s
+    rules:
+      # Critical Health Score Alert
+      - alert: DR_OverallHealthCritical
+        expr: dr_overall_health_score < 0.5
+        for: 2m
+        labels:
+          severity: critical
+          service: dr-orchestrator
+          alert_type: health
+        annotations:
+          summary: "DR Orchestrator overall health is critically low"
+          description: "Overall health score ({{ $value }}) has been below 0.5 for more than 2 minutes. Immediate investigation required."
+          runbook_url: "https://docs.company.com/dr-orchestrator/runbooks/health-critical"
+
+      # Failover Duration Exceeds RTO
+      - alert: DR_FailoverRTOViolation
+        expr: dr_failover_duration_seconds > 300
+        for: 0s
+        labels:
+          severity: critical
+          service: dr-orchestrator
+          alert_type: rto_violation
+        annotations:
+          summary: "Failover duration exceeded RTO target"
+          description: "Failover duration ({{ $value }}s) exceeded the 5-minute RTO target. Source: {{ $labels.source }}, Target: {{ $labels.target }}, Reason: {{ $labels.reason }}"
+          runbook_url: "https://docs.company.com/dr-orchestrator/runbooks/rto-violation"
+
+      # Replication Lag Critical
+      - alert: DR_ReplicationLagCritical
+        expr: striim_replication_lag_ms > 30000
+        for: 1m
+        labels:
+          severity: critical
+          service: striim-cdc
+          alert_type: replication_lag
+        annotations:
+          summary: "Striim replication lag is critically high"
+          description: "Replication lag ({{ $value }}ms) has exceeded the 30-second RPO target for more than 1 minute."
+          runbook_url: "https://docs.company.com/dr-orchestrator/runbooks/replication-lag"
+
+      # Database Connection Failure
+      - alert: DR_DatabaseDown
+        expr: dr_database_health_score{service=~"azure_sql_mi|gcp_cloud_sql"} < 0.1
+        for: 30s
+        labels:
+          severity: critical
+          service: "{{ $labels.service }}"
+          alert_type: database_down
+        annotations:
+          summary: "Database is down or unreachable"
+          description: "Database {{ $labels.service }} in {{ $labels.region }} is down or unreachable. Health score: {{ $value }}"
+          runbook_url: "https://docs.company.com/dr-orchestrator/runbooks/database-down"
+
+      # Cluster Health Critical
+      - alert: DR_ClusterHealthCritical
+        expr: dr_cluster_health_score{cluster=~"aks|gke"} < 0.3
+        for: 2m
+        labels:
+          severity: critical
+          service: "{{ $labels.cluster }}"
+          alert_type: cluster_health
+        annotations:
+          summary: "Kubernetes cluster health is critical"
+          description: "{{ $labels.cluster }} cluster in {{ $labels.region }} has critical health issues. Health score: {{ $value }}"
+          runbook_url: "https://docs.company.com/dr-orchestrator/runbooks/cluster-health"
+
+      # Failover Failed
+      - alert: DR_FailoverFailed
+        expr: increase(dr_failover_total{status="failed"}[5m]) > 0
+        for: 0s
+        labels:
+          severity: critical
+          service: dr-orchestrator
+          alert_type: failover_failed
+        annotations:
+          summary: "DR Failover has failed"
+          description: "Failover from {{ $labels.source }} to {{ $labels.target }} has failed. Reason: {{ $labels.reason }}"
+          runbook_url: "https://docs.company.com/dr-orchestrator/runbooks/failover-failed"
+
+  - name: dr_orchestrator_warning
+    interval: 60s
+    rules:
+      # Health Score Warning
+      - alert: DR_HealthScoreWarning
+        expr: dr_overall_health_score < 0.8 and dr_overall_health_score >= 0.5
+        for: 5m
+        labels:
+          severity: warning
+          service: dr-orchestrator
+          alert_type: health_degraded
+        annotations:
+          summary: "DR Orchestrator health is degraded"
+          description: "Overall health score ({{ $value }}) has been below 0.8 for more than 5 minutes."
+          runbook_url: "https://docs.company.com/dr-orchestrator/runbooks/health-warning"
+
+      # Failover Duration Warning
+      - alert: DR_FailoverDurationWarning
+        expr: dr_failover_duration_seconds > 240 and dr_failover_duration_seconds <= 300
+        for: 0s
+        labels:
+          severity: warning
+          service: dr-orchestrator
+          alert_type: rto_warning
+        annotations:
+          summary: "Failover duration approaching RTO limit"
+          description: "Failover duration ({{ $value }}s) is approaching the 5-minute RTO target. Current performance needs optimization."
+          runbook_url: "https://docs.company.com/dr-orchestrator/runbooks/rto-warning"
+
+      # High Replication Lag
+      - alert: DR_ReplicationLagHigh
+        expr: striim_replication_lag_ms > 15000 and striim_replication_lag_ms <= 30000
+        for: 3m
+        labels:
+          severity: warning
+          service: striim-cdc
+          alert_type: replication_lag_high
+        annotations:
+          summary: "Striim replication lag is high"
+          description: "Replication lag ({{ $value }}ms) has been above 15 seconds for more than 3 minutes."
+          runbook_url: "https://docs.company.com/dr-orchestrator/runbooks/replication-lag-high"
+
+      # Database Response Time High
+      - alert: DR_DatabaseResponseTimeSlow
+        expr: dr_database_response_time_ms > 1000
+        for: 5m
+        labels:
+          severity: warning
+          service: "{{ $labels.service }}"
+          alert_type: database_slow
+        annotations:
+          summary: "Database response time is slow"
+          description: "Database {{ $labels.service }} response time ({{ $value }}ms) has been above 1 second for more than 5 minutes."
+          runbook_url: "https://docs.company.com/dr-orchestrator/runbooks/database-slow"
+
+      # Cross-Cloud Latency High
+      - alert: DR_CrossCloudLatencyHigh
+        expr: dr_cross_cloud_latency_ms > 200
+        for: 10m
+        labels:
+          severity: warning
+          service: network
+          alert_type: latency_high
+        annotations:
+          summary: "Cross-cloud network latency is high"
+          description: "Network latency between {{ $labels.source }} and {{ $labels.target }} ({{ $value }}ms) has been above 200ms for more than 10 minutes."
+          runbook_url: "https://docs.company.com/dr-orchestrator/runbooks/latency-high"
+
+      # Striim Error Rate High
+      - alert: DR_StriimErrorRateHigh
+        expr: rate(striim_errors_total[5m]) > 10
+        for: 5m
+        labels:
+          severity: warning
+          service: striim-cdc
+          alert_type: error_rate_high
+        annotations:
+          summary: "Striim error rate is high"
+          description: "Striim error rate ({{ $value }} errors/sec) has been above 10 for more than 5 minutes."
+          runbook_url: "https://docs.company.com/dr-orchestrator/runbooks/striim-errors"
+
+      # Resource Utilization High
+      - alert: DR_ClusterCPUHigh
+        expr: avg by (cluster, region) (100 - (avg by (instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)) > 80
+        for: 10m
+        labels:
+          severity: warning
+          service: "{{ $labels.cluster }}"
+          alert_type: cpu_high
+        annotations:
+          summary: "Cluster CPU utilization is high"
+          description: "{{ $labels.cluster }} cluster in {{ $labels.region }} has high CPU utilization ({{ $value }}%) for more than 10 minutes."
+          runbook_url: "https://docs.company.com/dr-orchestrator/runbooks/cpu-high"
+
+      - alert: DR_ClusterMemoryHigh
+        expr: avg by (cluster, region) ((1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100) > 85
+        for: 10m
+        labels:
+          severity: warning
+          service: "{{ $labels.cluster }}"
+          alert_type: memory_high
+        annotations:
+          summary: "Cluster memory utilization is high"
+          description: "{{ $labels.cluster }} cluster in {{ $labels.region }} has high memory utilization ({{ $value }}%) for more than 10 minutes."
+          runbook_url: "https://docs.company.com/dr-orchestrator/runbooks/memory-high"
+
+  - name: dr_orchestrator_info
+    interval: 300s
+    rules:
+      # Failover Success Rate
+      - alert: DR_FailoverSuccessRateLow
+        expr: (sum(rate(dr_failover_total{status="success"}[24h])) / sum(rate(dr_failover_total[24h]))) * 100 < 95
+        for: 15m
+        labels:
+          severity: info
+          service: dr-orchestrator
+          alert_type: success_rate_low
+        annotations:
+          summary: "Failover success rate is below target"
+          description: "Failover success rate ({{ $value }}%) has been below 95% for the last 24 hours."
+          runbook_url: "https://docs.company.com/dr-orchestrator/runbooks/success-rate"
+
+      # Data Sync Status
+      - alert: DR_DataSyncIncomplete
+        expr: striim_sync_completion_percentage < 100
+        for: 30m
+        labels:
+          severity: info
+          service: striim-cdc
+          alert_type: sync_incomplete
+        annotations:
+          summary: "Data synchronization is incomplete"
+          description: "Data sync completion is at {{ $value }}% for more than 30 minutes."
+          runbook_url: "https://docs.company.com/dr-orchestrator/runbooks/data-sync"
+
+      # Certificate Expiration Warning
+      - alert: DR_CertificateExpiringWithin30Days
+        expr: (ssl_certificate_expiry_seconds - time()) / 86400 < 30
+        for: 1h
+        labels:
+          severity: info
+          service: security
+          alert_type: certificate_expiring
+        annotations:
+          summary: "SSL certificate expiring within 30 days"
+          description: "SSL certificate for {{ $labels.instance }} expires in {{ $value }} days."
+          runbook_url: "https://docs.company.com/dr-orchestrator/runbooks/certificate-renewal"
+
+      # Backup Status
+      - alert: DR_BackupDelayed
+        expr: time() - dr_last_backup_timestamp > 86400
+        for: 1h
+        labels:
+          severity: info
+          service: backup
+          alert_type: backup_delayed
+        annotations:
+          summary: "Database backup is delayed"
+          description: "Last backup for {{ $labels.database }} was {{ $value }} seconds ago (more than 24 hours)."
+          runbook_url: "https://docs.company.com/dr-orchestrator/runbooks/backup-delayed"
+
+  - name: dr_orchestrator_sla
+    interval: 300s
+    rules:
+      # RTO SLA Compliance
+      - alert: DR_RTOSLAViolation
+        expr: histogram_quantile(0.95, rate(dr_failover_duration_seconds_bucket[7d])) > 300
+        for: 1h
+        labels:
+          severity: warning
+          service: dr-orchestrator
+          alert_type: sla_violation
+          sla_type: rto
+        annotations:
+          summary: "RTO SLA violation detected"
+          description: "95th percentile of failover duration ({{ $value }}s) over the last 7 days exceeds the 5-minute RTO SLA."
+          runbook_url: "https://docs.company.com/dr-orchestrator/runbooks/rto-sla"
+
+      # RPO SLA Compliance
+      - alert: DR_RPOSLAViolation
+        expr: histogram_quantile(0.95, rate(striim_replication_lag_ms_bucket[7d])) > 30000
+        for: 1h
+        labels:
+          severity: warning
+          service: striim-cdc
+          alert_type: sla_violation
+          sla_type: rpo
+        annotations:
+          summary: "RPO SLA violation detected"
+          description: "95th percentile of replication lag ({{ $value }}ms) over the last 7 days exceeds the 30-second RPO SLA."
+          runbook_url: "https://docs.company.com/dr-orchestrator/runbooks/rpo-sla"
+
+      # Availability SLA
+      - alert: DR_AvailabilitySLAViolation
+        expr: avg_over_time(dr_overall_health_score[7d]) < 0.9999
+        for: 1h
+        labels:
+          severity: warning
+          service: dr-orchestrator
+          alert_type: sla_violation
+          sla_type: availability
+        annotations:
+          summary: "Availability SLA violation detected"
+          description: "Average health score ({{ $value }}) over the last 7 days is below the 99.99% availability SLA."
+          runbook_url: "https://docs.company.com/dr-orchestrator/runbooks/availability-sla"

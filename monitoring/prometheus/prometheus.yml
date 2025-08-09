@@ -1,0 +1,294 @@
+# Prometheus Configuration for DR Orchestrator Monitoring
+# Enterprise-grade monitoring configuration for cross-cloud disaster recovery
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: 'dr-orchestrator'
+    environment: 'production'
+    region: 'multi-cloud'
+
+# Alertmanager configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+          - alertmanager:9093
+
+# Rules files
+rule_files:
+  - "rules/*.yml"
+
+# Scrape configurations
+scrape_configs:
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+    scrape_interval: 30s
+    metrics_path: /metrics
+
+  # DR Orchestrator main service
+  - job_name: 'dr-orchestrator-main'
+    kubernetes_sd_configs:
+      - role: endpoints
+        namespaces:
+          names:
+            - dr-orchestrator
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_service_name]
+        action: keep
+        regex: dr-orchestrator-service
+      - source_labels: [__meta_kubernetes_endpoint_port_name]
+        action: keep
+        regex: http-metrics
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod
+      - source_labels: [__meta_kubernetes_service_name]
+        target_label: service
+      - source_labels: [__meta_kubernetes_namespace]
+        target_label: namespace
+    scrape_interval: 15s
+    metrics_path: /metrics
+
+  # DR Health Monitor service
+  - job_name: 'dr-health-monitor'
+    kubernetes_sd_configs:
+      - role: endpoints
+        namespaces:
+          names:
+            - dr-orchestrator
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_service_name]
+        action: keep
+        regex: dr-health-monitor-service
+      - source_labels: [__meta_kubernetes_endpoint_port_name]
+        action: keep
+        regex: http-metrics
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod
+      - source_labels: [__meta_kubernetes_service_name]
+        target_label: service
+      - source_labels: [__meta_kubernetes_namespace]
+        target_label: namespace
+    scrape_interval: 15s
+    metrics_path: /metrics
+
+  # DR Metrics Collector service
+  - job_name: 'dr-metrics-collector'
+    kubernetes_sd_configs:
+      - role: endpoints
+        namespaces:
+          names:
+            - dr-orchestrator
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_service_name]
+        action: keep
+        regex: dr-metrics-collector-service
+      - source_labels: [__meta_kubernetes_endpoint_port_name]
+        action: keep
+        regex: http-metrics
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod
+      - source_labels: [__meta_kubernetes_service_name]
+        target_label: service
+      - source_labels: [__meta_kubernetes_namespace]
+        target_label: namespace
+    scrape_interval: 15s
+    metrics_path: /metrics
+
+  # Kubernetes cluster metrics
+  - job_name: 'kubernetes-apiservers'
+    kubernetes_sd_configs:
+      - role: endpoints
+    scheme: https
+    tls_config:
+      ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+    bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_namespace, __meta_kubernetes_service_name, __meta_kubernetes_endpoint_port_name]
+        action: keep
+        regex: default;kubernetes;https
+
+  - job_name: 'kubernetes-nodes'
+    kubernetes_sd_configs:
+      - role: node
+    scheme: https
+    tls_config:
+      ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+    bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+    relabel_configs:
+      - action: labelmap
+        regex: __meta_kubernetes_node_label_(.+)
+      - target_label: __address__
+        replacement: kubernetes.default.svc:443
+      - source_labels: [__meta_kubernetes_node_name]
+        regex: (.+)
+        target_label: __metrics_path__
+        replacement: /api/v1/nodes/${1}/proxy/metrics
+
+  - job_name: 'kubernetes-cadvisor'
+    kubernetes_sd_configs:
+      - role: node
+    scheme: https
+    tls_config:
+      ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+    bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+    relabel_configs:
+      - action: labelmap
+        regex: __meta_kubernetes_node_label_(.+)
+      - target_label: __address__
+        replacement: kubernetes.default.svc:443
+      - source_labels: [__meta_kubernetes_node_name]
+        regex: (.+)
+        target_label: __metrics_path__
+        replacement: /api/v1/nodes/${1}/proxy/metrics/cadvisor
+
+  # Striim CDC monitoring
+  - job_name: 'striim-cluster'
+    static_configs:
+      - targets:
+          - 'striim-node1:8090'
+          - 'striim-node2:8090'
+    scrape_interval: 30s
+    metrics_path: /metrics
+    basic_auth:
+      username: 'striim-admin'
+      password: 'EnterpriseStriimPassword123!'
+
+  # Kafka monitoring
+  - job_name: 'kafka'
+    static_configs:
+      - targets:
+          - 'kafka-cluster:9101'
+    scrape_interval: 30s
+
+  # PostgreSQL monitoring (Cloud SQL proxy)
+  - job_name: 'postgresql-exporter'
+    static_configs:
+      - targets:
+          - 'postgres-exporter:9187'
+    scrape_interval: 30s
+
+  # SQL Server monitoring (Azure SQL MI)
+  - job_name: 'sqlserver-exporter'
+    static_configs:
+      - targets:
+          - 'sqlserver-exporter:9399'
+    scrape_interval: 30s
+
+  # Cloud Functions monitoring
+  - job_name: 'cloud-functions'
+    gce_sd_configs:
+      - project: enterprise-dr-orchestrator
+        zone: us-central1-a
+        filter: '(labels.function-name = "health-check-endpoint" OR labels.function-name = "dr-event-processor" OR labels.function-name = "manual-failover-trigger")'
+    relabel_configs:
+      - source_labels: [__meta_gce_metadata_function_name]
+        target_label: function_name
+      - source_labels: [__meta_gce_metadata_function_region]
+        target_label: region
+    scrape_interval: 60s
+    metrics_path: /_ah/monitoring
+
+  # Azure monitoring integration
+  - job_name: 'azure-exporter'
+    static_configs:
+      - targets:
+          - 'azure-exporter:9276'
+    scrape_interval: 60s
+
+  # GCP monitoring integration
+  - job_name: 'gcp-exporter'
+    static_configs:
+      - targets:
+          - 'gcp-exporter:9252'
+    scrape_interval: 60s
+
+  # Node exporter for system metrics
+  - job_name: 'node-exporter'
+    kubernetes_sd_configs:
+      - role: endpoints
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_endpoints_name]
+        action: keep
+        regex: node-exporter
+      - source_labels: [__meta_kubernetes_endpoint_port_name]
+        action: keep
+        regex: metrics
+
+  # Blackbox exporter for endpoint monitoring
+  - job_name: 'blackbox'
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+      - targets:
+          - https://prod-dr-sql-mi-001.database.windows.net:1433
+          - https://10.1.1.100:5432
+          - https://striim-lb.company.com/health
+          - https://dr-orchestrator.company.com/health
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
+
+# Storage configuration
+storage:
+  tsdb:
+    path: /prometheus/data
+    retention.time: 30d
+    retention.size: 50GB
+    wal-compression: true
+
+# Remote write configuration for long-term storage
+remote_write:
+  - url: "https://monitoring.googleapis.com/v1/projects/enterprise-dr-orchestrator/location/global/prometheus/api/v1/write"
+    headers:
+      "X-Scope-OrgID": "enterprise-dr-orchestrator"
+    queue_config:
+      capacity: 10000
+      max_shards: 50
+      min_shards: 1
+      max_samples_per_send: 1000
+      batch_send_deadline: 5s
+      min_backoff: 30ms
+      max_backoff: 100ms
+
+# Remote read configuration
+remote_read:
+  - url: "https://monitoring.googleapis.com/v1/projects/enterprise-dr-orchestrator/location/global/prometheus/api/v1/read"
+    headers:
+      "X-Scope-OrgID": "enterprise-dr-orchestrator"
+
+# Recording rules for performance
+recording_rules:
+  - name: dr_orchestrator_aggregations
+    interval: 30s
+    rules:
+      - record: dr:health_score:avg_5m
+        expr: avg_over_time(dr_health_score[5m])
+        labels:
+          aggregation: "5m_average"
+      
+      - record: dr:failover_duration:p95_1h
+        expr: histogram_quantile(0.95, rate(dr_failover_duration_seconds_bucket[1h]))
+        labels:
+          quantile: "0.95"
+          
+      - record: dr:replication_lag:max_5m
+        expr: max_over_time(striim_replication_lag_seconds[5m])
+        labels:
+          aggregation: "5m_max"
+
+# Tracing configuration
+tracing:
+  endpoint: "jaeger:14268/api/traces"
+  insecure: true
+  timeout: 5s
+  headers:
+    "X-Scope-OrgID": "enterprise-dr-orchestrator"

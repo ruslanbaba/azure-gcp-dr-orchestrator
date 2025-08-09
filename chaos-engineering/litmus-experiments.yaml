@@ -1,0 +1,515 @@
+# Chaos Engineering Experiments for DR Orchestrator
+
+apiVersion: litmuschaos.io/v1alpha1
+kind: ChaosEngine
+metadata:
+  name: dr-orchestrator-chaos
+  namespace: dr-system
+  labels:
+    app.kubernetes.io/name: dr-orchestrator
+    chaos.alpha.kubernetes.io/type: "chaos-engine"
+spec:
+  # Target application configuration
+  appinfo:
+    appns: dr-system
+    applabel: "app=dr-app"
+    appkind: deployment
+
+  # Chaos service account
+  chaosServiceAccount: chaos-admin
+
+  # Monitoring during chaos
+  monitoring: true
+  
+  # Job cleanup policy
+  jobCleanUpPolicy: delete
+
+  # Experiment sequence
+  experiments:
+  # Pod failure experiments
+  - name: pod-delete
+    spec:
+      components:
+        env:
+        # Total chaos duration
+        - name: TOTAL_CHAOS_DURATION
+          value: "180"  # 3 minutes
+        
+        # Interval between failures
+        - name: CHAOS_INTERVAL
+          value: "30"
+        
+        # Force delete pods
+        - name: FORCE
+          value: "false"
+        
+        # Percentage of pods to kill
+        - name: PODS_AFFECTED_PERC
+          value: "50"
+        
+        # Target specific pods
+        - name: TARGET_PODS
+          value: ""
+      
+      probe:
+      - name: "check-app-availability"
+        type: "httpProbe"
+        mode: "Continuous"
+        runProperties:
+          probeTimeout: 5
+          interval: 2
+          retry: 3
+        httpProbe/inputs:
+          url: "http://dr-app-service.dr-system.svc.cluster.local/health"
+          insecureSkipTLS: false
+          responseTimeout: 2000
+          method:
+            get:
+              criteria: ==
+              responseCode: "200"
+
+  # Network latency experiments
+  - name: pod-network-latency
+    spec:
+      components:
+        env:
+        # Network latency in milliseconds
+        - name: NETWORK_LATENCY
+          value: "2000"
+        
+        # Jitter
+        - name: JITTER
+          value: "100"
+        
+        # Target container
+        - name: TARGET_CONTAINER
+          value: "app"
+        
+        # Chaos duration
+        - name: TOTAL_CHAOS_DURATION
+          value: "120"
+        
+        # Target network interface
+        - name: NETWORK_INTERFACE
+          value: "eth0"
+        
+        # Percentage of packets to delay
+        - name: PACKETS_AFFECTED_PERC
+          value: "100"
+      
+      probe:
+      - name: "check-response-time"
+        type: "httpProbe"
+        mode: "Continuous"
+        runProperties:
+          probeTimeout: 10
+          interval: 5
+          retry: 2
+        httpProbe/inputs:
+          url: "http://dr-app-service.dr-system.svc.cluster.local/health"
+          responseTimeout: 8000
+          method:
+            get:
+              criteria: ==
+              responseCode: "200"
+
+  # Memory stress experiments
+  - name: pod-memory-hog
+    spec:
+      components:
+        env:
+        # Memory consumption in MB
+        - name: MEMORY_CONSUMPTION
+          value: "500"
+        
+        # Chaos duration
+        - name: TOTAL_CHAOS_DURATION
+          value: "300"
+        
+        # Target container
+        - name: TARGET_CONTAINER
+          value: "app"
+        
+        # Memory workers
+        - name: NUMBER_OF_WORKERS
+          value: "4"
+      
+      probe:
+      - name: "check-memory-usage"
+        type: "promProbe"
+        mode: "Continuous"
+        runProperties:
+          probeTimeout: 5
+          interval: 10
+          retry: 2
+        promProbe/inputs:
+          endpoint: "http://prometheus.monitoring.svc.cluster.local:9090"
+          query: "container_memory_usage_bytes{container='app',namespace='dr-system'}"
+          comparator:
+            criteria: "<="
+            value: "1073741824"  # 1GB
+
+  # CPU stress experiments
+  - name: pod-cpu-hog
+    spec:
+      components:
+        env:
+        # CPU cores to stress
+        - name: CPU_CORES
+          value: "2"
+        
+        # Chaos duration
+        - name: TOTAL_CHAOS_DURATION
+          value: "240"
+        
+        # Target container
+        - name: TARGET_CONTAINER
+          value: "app"
+        
+        # CPU load percentage
+        - name: CPU_LOAD
+          value: "100"
+
+  # Disk I/O stress
+  - name: pod-io-stress
+    spec:
+      components:
+        env:
+        # Filesystem to fill
+        - name: FILESYSTEM_UTILIZATION_PERCENTAGE
+          value: "80"
+        
+        # Chaos duration
+        - name: TOTAL_CHAOS_DURATION
+          value: "180"
+        
+        # Target container
+        - name: TARGET_CONTAINER
+          value: "app"
+        
+        # Volume mount path
+        - name: VOLUME_MOUNT_PATH
+          value: "/tmp"
+
+  # DNS failure experiments
+  - name: pod-dns-error
+    spec:
+      components:
+        env:
+        # Target hostnames
+        - name: TARGET_HOSTNAMES
+          value: "dr-app-service.dr-system.svc.cluster.local,kubernetes.default.svc.cluster.local"
+        
+        # Match scheme
+        - name: MATCH_SCHEME
+          value: "exact"
+        
+        # Chaos duration
+        - name: TOTAL_CHAOS_DURATION
+          value: "120"
+        
+        # Container runtime
+        - name: CONTAINER_RUNTIME
+          value: "containerd"
+        
+        # Socket path
+        - name: SOCKET_PATH
+          value: "/run/containerd/containerd.sock"
+
+---
+# Node-level chaos experiments
+apiVersion: litmuschaos.io/v1alpha1
+kind: ChaosEngine
+metadata:
+  name: dr-node-chaos
+  namespace: dr-system
+spec:
+  engineState: active
+  chaosServiceAccount: chaos-admin
+  
+  experiments:
+  # Node drain experiment
+  - name: node-drain
+    spec:
+      components:
+        env:
+        # Target node
+        - name: TARGET_NODE
+          value: ""
+        
+        # Chaos duration
+        - name: TOTAL_CHAOS_DURATION
+          value: "300"
+        
+        # Force drain
+        - name: FORCE
+          value: "false"
+      
+      probe:
+      - name: "check-node-ready"
+        type: "k8sProbe"
+        mode: "Continuous"
+        runProperties:
+          probeTimeout: 10
+          interval: 5
+          retry: 3
+        k8sProbe/inputs:
+          group: ""
+          version: "v1"
+          resource: "nodes"
+          operation: "get"
+          selector:
+            labelSelector:
+              matchLabels:
+                kubernetes.io/hostname: "TARGET_NODE"
+          fieldSelector: "status.conditions[?(@.type=='Ready')].status=True"
+
+  # Node CPU hog
+  - name: node-cpu-hog
+    spec:
+      components:
+        env:
+        # CPU cores to stress
+        - name: NODE_CPU_CORE
+          value: "2"
+        
+        # Chaos duration
+        - name: TOTAL_CHAOS_DURATION
+          value: "180"
+        
+        # CPU load percentage
+        - name: CPU_LOAD
+          value: "100"
+
+  # Node memory hog
+  - name: node-memory-hog
+    spec:
+      components:
+        env:
+        # Memory consumption in MB
+        - name: MEMORY_CONSUMPTION
+          value: "2048"
+        
+        # Chaos duration
+        - name: TOTAL_CHAOS_DURATION
+          value: "240"
+
+---
+# Network-level chaos experiments
+apiVersion: litmuschaos.io/v1alpha1
+kind: ChaosEngine
+metadata:
+  name: dr-network-chaos
+  namespace: dr-system
+spec:
+  engineState: active
+  chaosServiceAccount: chaos-admin
+  
+  experiments:
+  # Network partition
+  - name: pod-network-partition
+    spec:
+      components:
+        env:
+        # Policy for network partition
+        - name: POLICY
+          value: "allow"
+        
+        # Destination IPs to block
+        - name: DESTINATION_IPS
+          value: "dr-app-service.dr-system.svc.cluster.local"
+        
+        # Destination hosts
+        - name: DESTINATION_HOSTS
+          value: ""
+        
+        # Chaos duration
+        - name: TOTAL_CHAOS_DURATION
+          value: "120"
+        
+        # Target container
+        - name: TARGET_CONTAINER
+          value: "app"
+
+  # Packet loss
+  - name: pod-network-loss
+    spec:
+      components:
+        env:
+        # Packet loss percentage
+        - name: NETWORK_PACKET_LOSS_PERCENTAGE
+          value: "20"
+        
+        # Target container
+        - name: TARGET_CONTAINER
+          value: "app"
+        
+        # Chaos duration
+        - name: TOTAL_CHAOS_DURATION
+          value: "180"
+        
+        # Network interface
+        - name: NETWORK_INTERFACE
+          value: "eth0"
+
+---
+# Application-specific chaos experiments
+apiVersion: litmuschaos.io/v1alpha1
+kind: ChaosEngine
+metadata:
+  name: dr-application-chaos
+  namespace: dr-system
+spec:
+  engineState: active
+  chaosServiceAccount: chaos-admin
+  
+  experiments:
+  # Container kill
+  - name: container-kill
+    spec:
+      components:
+        env:
+        # Target container
+        - name: TARGET_CONTAINER
+          value: "app"
+        
+        # Chaos interval
+        - name: CHAOS_INTERVAL
+          value: "15"
+        
+        # Total chaos duration
+        - name: TOTAL_CHAOS_DURATION
+          value: "120"
+        
+        # Container runtime
+        - name: CONTAINER_RUNTIME
+          value: "containerd"
+        
+        # Socket path
+        - name: SOCKET_PATH
+          value: "/run/containerd/containerd.sock"
+        
+        # Signal for kill
+        - name: SIGNAL
+          value: "SIGKILL"
+
+  # HTTP chaos for API endpoints
+  - name: pod-http-chaos
+    spec:
+      components:
+        env:
+        # Target service port
+        - name: TARGET_SERVICE_PORT
+          value: "8080"
+        
+        # Proxy port
+        - name: PROXY_PORT
+          value: "20000"
+        
+        # Toxicity percentage
+        - name: TOXICITY
+          value: "100"
+        
+        # Network interface
+        - name: NETWORK_INTERFACE
+          value: "eth0"
+        
+        # Chaos duration
+        - name: TOTAL_CHAOS_DURATION
+          value: "180"
+
+---
+# Database chaos experiments
+apiVersion: litmuschaos.io/v1alpha1
+kind: ChaosEngine
+metadata:
+  name: dr-database-chaos
+  namespace: dr-system
+spec:
+  engineState: active
+  chaosServiceAccount: chaos-admin
+  
+  experiments:
+  # Database connection chaos
+  - name: pod-network-duplication
+    spec:
+      components:
+        env:
+        # Duplicate percentage
+        - name: NETWORK_PACKET_DUPLICATION_PERCENTAGE
+          value: "10"
+        
+        # Target container
+        - name: TARGET_CONTAINER
+          value: "cloud-sql-proxy"
+        
+        # Chaos duration
+        - name: TOTAL_CHAOS_DURATION
+          value: "120"
+        
+        # Network interface
+        - name: NETWORK_INTERFACE
+          value: "eth0"
+      
+      probe:
+      - name: "check-database-connection"
+        type: "cmdProbe"
+        mode: "Continuous"
+        runProperties:
+          probeTimeout: 10
+          interval: 5
+          retry: 3
+        cmdProbe/inputs:
+          command: "pg_isready"
+          args: ["-h", "127.0.0.1", "-p", "5432", "-U", "app_user"]
+          source:
+            image: "postgres:15-alpine"
+
+---
+# Chaos scheduler for regular resilience testing
+apiVersion: litmuschaos.io/v1alpha1
+kind: ChaosSchedule
+metadata:
+  name: dr-chaos-schedule
+  namespace: dr-system
+spec:
+  schedule:
+    now: false
+    repeat:
+      timeRange:
+        startTime: "02:00"  # 2 AM
+        endTime: "06:00"    # 6 AM
+      workDays:
+        includedDays: "Mon,Tue,Wed,Thu,Fri"
+      minChaosInterval: "8h"  # Minimum 8 hours between chaos experiments
+  
+  engineTemplateSpec:
+    appinfo:
+      appns: dr-system
+      applabel: "app=dr-app"
+      appkind: deployment
+    
+    chaosServiceAccount: chaos-admin
+    monitoring: true
+    jobCleanUpPolicy: delete
+    
+    experiments:
+    - name: pod-delete
+      spec:
+        components:
+          env:
+          - name: TOTAL_CHAOS_DURATION
+            value: "60"
+          - name: CHAOS_INTERVAL
+            value: "30"
+          - name: FORCE
+            value: "false"
+    
+    - name: pod-network-latency
+      spec:
+        components:
+          env:
+          - name: NETWORK_LATENCY
+            value: "1000"
+          - name: TOTAL_CHAOS_DURATION
+            value: "120"

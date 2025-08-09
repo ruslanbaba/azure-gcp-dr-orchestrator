@@ -1,0 +1,1071 @@
+# Google Kubernetes Engine (GKE) Deployment Manifests
+# Enterprise application workloads for DR orchestration
+
+---
+# Namespace for DR orchestrator components
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dr-orchestrator
+  labels:
+    name: dr-orchestrator
+    environment: production
+    compliance: soc2-type-ii
+    istio-injection: enabled
+  annotations:
+    scheduler.alpha.kubernetes.io/node-selector: "environment=production"
+
+---
+# Service Account for DR orchestrator
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dr-orchestrator-sa
+  namespace: dr-orchestrator
+  labels:
+    app: dr-orchestrator
+    component: service-account
+  annotations:
+    iam.gke.io/gcp-service-account: dr-orchestrator@enterprise-dr-orchestrator.iam.gserviceaccount.com
+
+---
+# ClusterRole for DR orchestrator
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: dr-orchestrator-role
+  labels:
+    app: dr-orchestrator
+    component: rbac
+rules:
+- apiGroups: [""]
+  resources: ["pods", "services", "endpoints", "configmaps", "secrets"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets", "statefulsets", "daemonsets"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["networking.k8s.io"]
+  resources: ["ingresses", "networkpolicies"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["monitoring.coreos.com"]
+  resources: ["servicemonitors", "prometheusrules"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["istio.io"]
+  resources: ["virtualservices", "destinationrules", "gateways"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+---
+# ClusterRoleBinding for DR orchestrator
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: dr-orchestrator-binding
+  labels:
+    app: dr-orchestrator
+    component: rbac
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: dr-orchestrator-role
+subjects:
+- kind: ServiceAccount
+  name: dr-orchestrator-sa
+  namespace: dr-orchestrator
+
+---
+# ConfigMap for DR orchestrator configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dr-orchestrator-config
+  namespace: dr-orchestrator
+  labels:
+    app: dr-orchestrator
+    component: config
+data:
+  config.yaml: |
+    # DR Orchestrator Configuration for GKE
+    gcp:
+      project_id: "enterprise-dr-orchestrator"
+      region: "us-central1"
+      zone: "us-central1-a"
+      
+      cloud_sql:
+        instance_name: "prod-dr-cloud-sql"
+        database: "enterprise_app_db"
+        connection_name: "enterprise-dr-orchestrator:us-central1:prod-dr-cloud-sql"
+        private_ip: "10.1.1.100"
+        port: 5432
+        
+      gke_cluster:
+        name: "prod-dr-gke-cluster"
+        location: "us-central1"
+        
+    azure:
+      subscription_id: "your-azure-subscription-id"
+      resource_group: "prod-dr-azure-rg"
+      location: "East US 2"
+      
+      sql_managed_instance:
+        name: "prod-dr-sql-mi-001"
+        server: "prod-dr-sql-mi-001.database.windows.net"
+        database: "EnterpriseProductionDB"
+        port: 1433
+        
+      aks_cluster:
+        name: "prod-dr-aks-cluster"
+        resource_group: "prod-dr-azure-rg"
+        
+    striim:
+      cluster_url: "https://striim-lb.company.com"
+      application_name: "AzureToGcpDrReplication"
+      username: "striim-admin"
+      
+    monitoring:
+      prometheus_url: "http://prometheus-server:9090"
+      grafana_url: "http://grafana:3000"
+      alert_manager_url: "http://alertmanager:9093"
+      
+    dr_settings:
+      rto_target_seconds: 300  # 5 minutes
+      rpo_target_seconds: 30   # 30 seconds
+      health_check_interval: 30
+      failover_timeout: 600
+      
+    business_hours:
+      timezone: "America/New_York"
+      start_hour: 6
+      end_hour: 23
+      
+    cloud_sql_proxy:
+      connection_name: "enterprise-dr-orchestrator:us-central1:prod-dr-cloud-sql"
+      port: 5432
+      
+  logging.yaml: |
+    version: 1
+    formatters:
+      json:
+        format: '{"timestamp": "%(asctime)s", "level": "%(levelname)s", "logger": "%(name)s", "message": "%(message)s", "correlation_id": "%(correlation_id)s"}'
+      default:
+        format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    handlers:
+      console:
+        class: logging.StreamHandler
+        level: INFO
+        formatter: json
+        stream: ext://sys.stdout
+      file:
+        class: logging.handlers.RotatingFileHandler
+        level: DEBUG
+        formatter: json
+        filename: /var/log/dr-orchestrator/orchestrator.log
+        maxBytes: 10485760
+        backupCount: 10
+    loggers:
+      dr_orchestrator:
+        level: INFO
+        handlers: [console, file]
+        propagate: no
+      google.cloud:
+        level: WARNING
+        handlers: [console]
+        propagate: no
+    root:
+      level: INFO
+      handlers: [console]
+
+---
+# Secret for DR orchestrator credentials
+apiVersion: v1
+kind: Secret
+metadata:
+  name: dr-orchestrator-secrets
+  namespace: dr-orchestrator
+  labels:
+    app: dr-orchestrator
+    component: secrets
+type: Opaque
+stringData:
+  gcp-service-account-key: |
+    {
+      "type": "service_account",
+      "project_id": "enterprise-dr-orchestrator",
+      "private_key_id": "your-private-key-id",
+      "private_key": "-----BEGIN PRIVATE KEY-----\nYOUR_PRIVATE_KEY\n-----END PRIVATE KEY-----\n",
+      "client_email": "dr-orchestrator@enterprise-dr-orchestrator.iam.gserviceaccount.com",
+      "client_id": "your-client-id",
+      "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+      "token_uri": "https://oauth2.googleapis.com/token",
+      "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+      "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/dr-orchestrator%40enterprise-dr-orchestrator.iam.gserviceaccount.com"
+    }
+  gcp-cloud-sql-password: "EnterprisePostgresPassword123!"
+  azure-client-secret: "your-azure-client-secret"
+  azure-sql-password: "EnterprisePassword123!"
+  striim-password: "EnterpriseStriimPassword123!"
+
+---
+# Persistent Volume Claim for logs
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: dr-orchestrator-logs-pvc
+  namespace: dr-orchestrator
+  labels:
+    app: dr-orchestrator
+    component: storage
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: ssd
+  resources:
+    requests:
+      storage: 10Gi
+
+---
+# Deployment for DR orchestrator main service
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dr-orchestrator-main
+  namespace: dr-orchestrator
+  labels:
+    app: dr-orchestrator
+    component: main
+    version: v1.0.0
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: dr-orchestrator
+      component: main
+  template:
+    metadata:
+      labels:
+        app: dr-orchestrator
+        component: main
+        version: v1.0.0
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+        sidecar.istio.io/inject: "true"
+    spec:
+      serviceAccountName: dr-orchestrator-sa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      # Cloud SQL Proxy sidecar
+      - name: cloud-sql-proxy
+        image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.8.0
+        args:
+          - "--structured-logs"
+          - "--port=5432"
+          - "enterprise-dr-orchestrator:us-central1:prod-dr-cloud-sql"
+        securityContext:
+          runAsNonRoot: true
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+      # Main DR orchestrator container
+      - name: dr-orchestrator
+        image: gcr.io/enterprise-dr-orchestrator/dr-orchestrator:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8080
+          name: http-metrics
+          protocol: TCP
+        - containerPort: 8443
+          name: https-api
+          protocol: TCP
+        env:
+        - name: ENVIRONMENT
+          value: "production"
+        - name: CLOUD_PROVIDER
+          value: "gcp"
+        - name: LOG_LEVEL
+          value: "INFO"
+        - name: METRICS_PORT
+          value: "8080"
+        - name: API_PORT
+          value: "8443"
+        - name: CONFIG_PATH
+          value: "/app/config/config.yaml"
+        - name: SECRETS_PATH
+          value: "/app/secrets"
+        - name: GOOGLE_APPLICATION_CREDENTIALS
+          value: "/app/secrets/gcp-service-account-key"
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        envFrom:
+        - secretRef:
+            name: dr-orchestrator-secrets
+        volumeMounts:
+        - name: config
+          mountPath: /app/config
+          readOnly: true
+        - name: secrets
+          mountPath: /app/secrets
+          readOnly: true
+        - name: logs
+          mountPath: /var/log/dr-orchestrator
+        - name: tmp
+          mountPath: /tmp
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "4Gi"
+            cpu: "2000m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+            scheme: HTTP
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
+            scheme: HTTP
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+      volumes:
+      - name: config
+        configMap:
+          name: dr-orchestrator-config
+      - name: secrets
+        secret:
+          secretName: dr-orchestrator-secrets
+      - name: logs
+        persistentVolumeClaim:
+          claimName: dr-orchestrator-logs-pvc
+      - name: tmp
+        emptyDir: {}
+      nodeSelector:
+        kubernetes.io/os: linux
+        cloud.google.com/gke-nodepool: prod-dr-node-pool
+      tolerations:
+      - key: "cloud.google.com/gke-spot"
+        operator: "Equal"
+        value: "true"
+        effect: "NoSchedule"
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - dr-orchestrator
+              topologyKey: kubernetes.io/hostname
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 50
+            preference:
+              matchExpressions:
+              - key: cloud.google.com/gke-preemptible
+                operator: DoesNotExist
+
+---
+# Service for DR orchestrator
+apiVersion: v1
+kind: Service
+metadata:
+  name: dr-orchestrator-service
+  namespace: dr-orchestrator
+  labels:
+    app: dr-orchestrator
+    component: service
+spec:
+  type: ClusterIP
+  ports:
+  - name: http-metrics
+    port: 8080
+    targetPort: 8080
+    protocol: TCP
+  - name: https-api
+    port: 8443
+    targetPort: 8443
+    protocol: TCP
+  selector:
+    app: dr-orchestrator
+    component: main
+
+---
+# Deployment for health monitor service
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dr-health-monitor
+  namespace: dr-orchestrator
+  labels:
+    app: dr-orchestrator
+    component: health-monitor
+    version: v1.0.0
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: dr-orchestrator
+      component: health-monitor
+  template:
+    metadata:
+      labels:
+        app: dr-orchestrator
+        component: health-monitor
+        version: v1.0.0
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8081"
+        prometheus.io/path: "/metrics"
+        sidecar.istio.io/inject: "true"
+    spec:
+      serviceAccountName: dr-orchestrator-sa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      # Cloud SQL Proxy sidecar
+      - name: cloud-sql-proxy
+        image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.8.0
+        args:
+          - "--structured-logs"
+          - "--port=5432"
+          - "enterprise-dr-orchestrator:us-central1:prod-dr-cloud-sql"
+        securityContext:
+          runAsNonRoot: true
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+      # Health monitor container
+      - name: health-monitor
+        image: gcr.io/enterprise-dr-orchestrator/dr-health-monitor:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8081
+          name: http-metrics
+          protocol: TCP
+        env:
+        - name: ENVIRONMENT
+          value: "production"
+        - name: CLOUD_PROVIDER
+          value: "gcp"
+        - name: LOG_LEVEL
+          value: "INFO"
+        - name: METRICS_PORT
+          value: "8081"
+        - name: CONFIG_PATH
+          value: "/app/config/config.yaml"
+        - name: CHECK_INTERVAL
+          value: "30"
+        - name: GOOGLE_APPLICATION_CREDENTIALS
+          value: "/app/secrets/gcp-service-account-key"
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        envFrom:
+        - secretRef:
+            name: dr-orchestrator-secrets
+        volumeMounts:
+        - name: config
+          mountPath: /app/config
+          readOnly: true
+        - name: secrets
+          mountPath: /app/secrets
+          readOnly: true
+        - name: logs
+          mountPath: /var/log/dr-orchestrator
+        - name: tmp
+          mountPath: /tmp
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8081
+            scheme: HTTP
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8081
+            scheme: HTTP
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+      volumes:
+      - name: config
+        configMap:
+          name: dr-orchestrator-config
+      - name: secrets
+        secret:
+          secretName: dr-orchestrator-secrets
+      - name: logs
+        persistentVolumeClaim:
+          claimName: dr-orchestrator-logs-pvc
+      - name: tmp
+        emptyDir: {}
+      nodeSelector:
+        kubernetes.io/os: linux
+
+---
+# Service for health monitor
+apiVersion: v1
+kind: Service
+metadata:
+  name: dr-health-monitor-service
+  namespace: dr-orchestrator
+  labels:
+    app: dr-orchestrator
+    component: health-monitor-service
+spec:
+  type: ClusterIP
+  ports:
+  - name: http-metrics
+    port: 8081
+    targetPort: 8081
+    protocol: TCP
+  selector:
+    app: dr-orchestrator
+    component: health-monitor
+
+---
+# Deployment for metrics collector
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dr-metrics-collector
+  namespace: dr-orchestrator
+  labels:
+    app: dr-orchestrator
+    component: metrics-collector
+    version: v1.0.0
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dr-orchestrator
+      component: metrics-collector
+  template:
+    metadata:
+      labels:
+        app: dr-orchestrator
+        component: metrics-collector
+        version: v1.0.0
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8082"
+        prometheus.io/path: "/metrics"
+        sidecar.istio.io/inject: "true"
+    spec:
+      serviceAccountName: dr-orchestrator-sa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: metrics-collector
+        image: gcr.io/enterprise-dr-orchestrator/dr-metrics-collector:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8082
+          name: http-metrics
+          protocol: TCP
+        env:
+        - name: ENVIRONMENT
+          value: "production"
+        - name: CLOUD_PROVIDER
+          value: "gcp"
+        - name: LOG_LEVEL
+          value: "INFO"
+        - name: METRICS_PORT
+          value: "8082"
+        - name: CONFIG_PATH
+          value: "/app/config/config.yaml"
+        - name: COLLECTION_INTERVAL
+          value: "15"
+        - name: GOOGLE_APPLICATION_CREDENTIALS
+          value: "/app/secrets/gcp-service-account-key"
+        envFrom:
+        - secretRef:
+            name: dr-orchestrator-secrets
+        volumeMounts:
+        - name: config
+          mountPath: /app/config
+          readOnly: true
+        - name: secrets
+          mountPath: /app/secrets
+          readOnly: true
+        - name: logs
+          mountPath: /var/log/dr-orchestrator
+        - name: tmp
+          mountPath: /tmp
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8082
+            scheme: HTTP
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8082
+            scheme: HTTP
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+      volumes:
+      - name: config
+        configMap:
+          name: dr-orchestrator-config
+      - name: secrets
+        secret:
+          secretName: dr-orchestrator-secrets
+      - name: logs
+        persistentVolumeClaim:
+          claimName: dr-orchestrator-logs-pvc
+      - name: tmp
+        emptyDir: {}
+
+---
+# Service for metrics collector
+apiVersion: v1
+kind: Service
+metadata:
+  name: dr-metrics-collector-service
+  namespace: dr-orchestrator
+  labels:
+    app: dr-orchestrator
+    component: metrics-collector-service
+spec:
+  type: ClusterIP
+  ports:
+  - name: http-metrics
+    port: 8082
+    targetPort: 8082
+    protocol: TCP
+  selector:
+    app: dr-orchestrator
+    component: metrics-collector
+
+---
+# CronJob for periodic DR tests
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: dr-test-runner
+  namespace: dr-orchestrator
+  labels:
+    app: dr-orchestrator
+    component: test-runner
+spec:
+  schedule: "0 2 * * 0"  # Every Sunday at 2 AM
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            app: dr-orchestrator
+            component: test-runner
+          annotations:
+            sidecar.istio.io/inject: "false"
+        spec:
+          serviceAccountName: dr-orchestrator-sa
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1001
+            runAsGroup: 1001
+            fsGroup: 1001
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+          - name: dr-test-runner
+            image: gcr.io/enterprise-dr-orchestrator/dr-test-runner:latest
+            imagePullPolicy: Always
+            env:
+            - name: ENVIRONMENT
+              value: "production"
+            - name: TEST_TYPE
+              value: "weekly"
+            - name: LOG_LEVEL
+              value: "INFO"
+            - name: CONFIG_PATH
+              value: "/app/config/config.yaml"
+            - name: GOOGLE_APPLICATION_CREDENTIALS
+              value: "/app/secrets/gcp-service-account-key"
+            envFrom:
+            - secretRef:
+                name: dr-orchestrator-secrets
+            volumeMounts:
+            - name: config
+              mountPath: /app/config
+              readOnly: true
+            - name: secrets
+              mountPath: /app/secrets
+              readOnly: true
+            - name: test-results
+              mountPath: /app/test-results
+            - name: tmp
+              mountPath: /tmp
+            resources:
+              requests:
+                memory: "512Mi"
+                cpu: "250m"
+              limits:
+                memory: "2Gi"
+                cpu: "1000m"
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop:
+                - ALL
+          volumes:
+          - name: config
+            configMap:
+              name: dr-orchestrator-config
+          - name: secrets
+            secret:
+              secretName: dr-orchestrator-secrets
+          - name: test-results
+            emptyDir: {}
+          - name: tmp
+            emptyDir: {}
+
+---
+# HorizontalPodAutoscaler for main orchestrator
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: dr-orchestrator-hpa
+  namespace: dr-orchestrator
+  labels:
+    app: dr-orchestrator
+    component: autoscaler
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: dr-orchestrator-main
+  minReplicas: 3
+  maxReplicas: 20
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 10
+        periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 60
+
+---
+# VerticalPodAutoscaler for health monitor
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: dr-health-monitor-vpa
+  namespace: dr-orchestrator
+  labels:
+    app: dr-orchestrator
+    component: vpa
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: dr-health-monitor
+  updatePolicy:
+    updateMode: "Auto"
+  resourcePolicy:
+    containerPolicies:
+    - containerName: health-monitor
+      maxAllowed:
+        cpu: "2"
+        memory: "4Gi"
+      minAllowed:
+        cpu: "100m"
+        memory: "256Mi"
+
+---
+# PodDisruptionBudget for main orchestrator
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: dr-orchestrator-pdb
+  namespace: dr-orchestrator
+  labels:
+    app: dr-orchestrator
+    component: pdb
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: dr-orchestrator
+      component: main
+
+---
+# NetworkPolicy for security
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: dr-orchestrator-netpol
+  namespace: dr-orchestrator
+  labels:
+    app: dr-orchestrator
+    component: network-policy
+spec:
+  podSelector:
+    matchLabels:
+      app: dr-orchestrator
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: monitoring
+    - namespaceSelector:
+        matchLabels:
+          name: istio-system
+    - podSelector:
+        matchLabels:
+          app: dr-orchestrator
+    ports:
+    - protocol: TCP
+      port: 8080
+    - protocol: TCP
+      port: 8081
+    - protocol: TCP
+      port: 8082
+    - protocol: TCP
+      port: 8443
+  egress:
+  - {}  # Allow all egress traffic for cloud API calls
+
+---
+# ServiceMonitor for Prometheus scraping
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: dr-orchestrator-monitor
+  namespace: dr-orchestrator
+  labels:
+    app: dr-orchestrator
+    component: monitoring
+spec:
+  selector:
+    matchLabels:
+      app: dr-orchestrator
+  endpoints:
+  - port: http-metrics
+    interval: 30s
+    path: /metrics
+    honorLabels: true
+
+---
+# Istio Gateway for external access
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: dr-orchestrator-gateway
+  namespace: dr-orchestrator
+  labels:
+    app: dr-orchestrator
+    component: istio-gateway
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+  - port:
+      number: 443
+      name: https
+      protocol: HTTPS
+    tls:
+      mode: SIMPLE
+      credentialName: dr-orchestrator-tls
+    hosts:
+    - dr-orchestrator.company.com
+
+---
+# Istio VirtualService for routing
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: dr-orchestrator-vs
+  namespace: dr-orchestrator
+  labels:
+    app: dr-orchestrator
+    component: istio-virtualservice
+spec:
+  hosts:
+  - dr-orchestrator.company.com
+  gateways:
+  - dr-orchestrator-gateway
+  http:
+  - match:
+    - uri:
+        prefix: /api/
+    route:
+    - destination:
+        host: dr-orchestrator-service
+        port:
+          number: 8443
+    timeout: 30s
+    retries:
+      attempts: 3
+      perTryTimeout: 10s
+  - match:
+    - uri:
+        prefix: /metrics
+    route:
+    - destination:
+        host: dr-orchestrator-service
+        port:
+          number: 8080
+
+---
+# Istio DestinationRule for traffic policies
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: dr-orchestrator-dr
+  namespace: dr-orchestrator
+  labels:
+    app: dr-orchestrator
+    component: istio-destinationrule
+spec:
+  host: dr-orchestrator-service
+  trafficPolicy:
+    loadBalancer:
+      simple: LEAST_CONN
+    connectionPool:
+      tcp:
+        maxConnections: 100
+      http:
+        http1MaxPendingRequests: 50
+        maxRequestsPerConnection: 10
+    circuitBreaker:
+      consecutiveGatewayErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50

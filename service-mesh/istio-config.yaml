@@ -1,0 +1,289 @@
+# Service Mesh Integration with Istio
+
+# Istio Control Plane Configuration
+apiVersion: install.istio.io/v1alpha1
+kind: IstioOperator
+metadata:
+  name: dr-orchestrator-control-plane
+  namespace: istio-system
+spec:
+  values:
+    global:
+      meshID: dr-mesh
+      network: primary-network
+      # Multi-cluster configuration
+      meshNetworks:
+        primary-network:
+          endpoints:
+          - fromRegistry: primary-cluster
+          gateways:
+          - registry_service_name: istio-eastwestgateway.istio-system.svc.cluster.local
+            port: 15443
+      
+      # Tracing configuration
+      tracer:
+        jaeger:
+          service: jaeger.tracing.svc.cluster.local
+          port: 14268
+      
+      # Metrics configuration
+      defaultConfig:
+        proxyStatsMatcher:
+          inclusionRegexps:
+          - ".*outlier_detection.*"
+          - ".*circuit_breakers.*"
+          - ".*upstream_rq_retry.*"
+          - ".*_cx_.*"
+  
+  components:
+    pilot:
+      k8s:
+        resources:
+          requests:
+            cpu: 500m
+            memory: 2048Mi
+          limits:
+            cpu: 1000m
+            memory: 4096Mi
+        hpaSpec:
+          minReplicas: 2
+          maxReplicas: 5
+          metrics:
+          - type: Resource
+            resource:
+              name: cpu
+              target:
+                type: Utilization
+                averageUtilization: 80
+    
+    ingressGateways:
+    - name: istio-ingressgateway
+      enabled: true
+      k8s:
+        service:
+          type: LoadBalancer
+          ports:
+          - port: 15021
+            targetPort: 15021
+            name: status-port
+          - port: 80
+            targetPort: 8080
+            name: http2
+          - port: 443
+            targetPort: 8443
+            name: https
+          - port: 15443
+            targetPort: 15443
+            name: tls
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 2000m
+            memory: 1024Mi
+        hpaSpec:
+          minReplicas: 2
+          maxReplicas: 5
+    
+    - name: istio-eastwestgateway
+      label:
+        istio: eastwestgateway
+        app: istio-eastwestgateway
+      enabled: true
+      k8s:
+        service:
+          type: LoadBalancer
+          ports:
+          - port: 15021
+            targetPort: 15021
+            name: status-port
+          - port: 15443
+            targetPort: 15443
+            name: tls
+
+---
+# Peer Authentication for mTLS
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: istio-system
+spec:
+  mtls:
+    mode: STRICT
+
+---
+# Network Policy for DR Services
+apiVersion: networking.istio.io/v1beta1
+kind: ServiceEntry
+metadata:
+  name: external-database
+  namespace: dr-system
+spec:
+  hosts:
+  - external-db.company.com
+  ports:
+  - number: 5432
+    name: postgres
+    protocol: TCP
+  location: MESH_EXTERNAL
+  resolution: DNS
+
+---
+# Virtual Service for Traffic Management
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: dr-app-routing
+  namespace: dr-system
+spec:
+  hosts:
+  - dr-app.company.com
+  gateways:
+  - istio-system/dr-gateway
+  http:
+  - match:
+    - headers:
+        canary:
+          exact: "true"
+    route:
+    - destination:
+        host: dr-app
+        subset: canary
+      weight: 100
+  - route:
+    - destination:
+        host: dr-app
+        subset: stable
+      weight: 90
+    - destination:
+        host: dr-app
+        subset: canary
+      weight: 10
+  
+  # Fault injection for testing
+  fault:
+    delay:
+      percentage:
+        value: 0.1
+      fixedDelay: 5s
+    abort:
+      percentage:
+        value: 0.01
+      httpStatus: 500
+
+---
+# Destination Rule for Load Balancing
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: dr-app-destination
+  namespace: dr-system
+spec:
+  host: dr-app
+  trafficPolicy:
+    loadBalancer:
+      simple: LEAST_CONN
+    connectionPool:
+      tcp:
+        maxConnections: 100
+      http:
+        http1MaxPendingRequests: 50
+        http2MaxRequests: 100
+        maxRequestsPerConnection: 2
+        maxRetries: 3
+        consecutiveGatewayErrors: 5
+        interval: 30s
+        baseEjectionTime: 30s
+        maxEjectionPercent: 50
+    outlierDetection:
+      consecutiveGatewayErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+  subsets:
+  - name: stable
+    labels:
+      version: stable
+  - name: canary
+    labels:
+      version: canary
+    trafficPolicy:
+      loadBalancer:
+        simple: ROUND_ROBIN
+
+---
+# Authorization Policy
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: dr-app-authz
+  namespace: dr-system
+spec:
+  selector:
+    matchLabels:
+      app: dr-app
+  rules:
+  - from:
+    - source:
+        principals: ["cluster.local/ns/dr-system/sa/dr-frontend"]
+  - to:
+    - operation:
+        methods: ["GET", "POST"]
+        paths: ["/api/*"]
+  - when:
+    - key: source.ip
+      values: ["10.0.0.0/8", "172.16.0.0/12"]
+
+---
+# Gateway Configuration
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: dr-gateway
+  namespace: istio-system
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+  - port:
+      number: 80
+      name: http
+      protocol: HTTP
+    hosts:
+    - "dr-app.company.com"
+    tls:
+      httpsRedirect: true
+  - port:
+      number: 443
+      name: https
+      protocol: HTTPS
+    tls:
+      mode: SIMPLE
+      credentialName: dr-app-tls-secret
+    hosts:
+    - "dr-app.company.com"
+
+---
+# Sidecar Configuration for Performance
+apiVersion: networking.istio.io/v1beta1
+kind: Sidecar
+metadata:
+  name: dr-app-sidecar
+  namespace: dr-system
+spec:
+  workloadSelector:
+    labels:
+      app: dr-app
+  egress:
+  - hosts:
+    - "./*"
+    - "istio-system/*"
+    - "monitoring/*"
+  ingress:
+  - port:
+      number: 8080
+      name: http
+      protocol: HTTP
+    defaultEndpoint: 127.0.0.1:8080
