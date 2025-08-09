@@ -199,10 +199,10 @@ stringData:
       "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
       "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/dr-orchestrator%40enterprise-dr-orchestrator.iam.gserviceaccount.com"
     }
-  gcp-cloud-sql-password: "EnterprisePostgresPassword123!"
-  azure-client-secret: "your-azure-client-secret"
-  azure-sql-password: "EnterprisePassword123!"
-  striim-password: "EnterpriseStriimPassword123!"
+  gcp-cloud-sql-password: "${GCP_CLOUD_SQL_PASSWORD}"
+  azure-client-secret: "${AZURE_CLIENT_SECRET}"
+  azure-sql-password: "${AZURE_SQL_PASSWORD}"
+  striim-password: "${STRIIM_PASSWORD}"
 
 ---
 # Persistent Volume Claim for logs

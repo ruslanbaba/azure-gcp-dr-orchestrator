@@ -9,18 +9,18 @@ IMPORT STATIC com.webaction.utility.Utility.*;
 IMPORT STATIC com.webaction.source.SQLServer.*;
 IMPORT STATIC com.webaction.target.PostgreSQL.*;
 
-# Enterprise configuration parameters
-CREATE OR REPLACE GLOBAL CONSTANT String AZURE_SQL_MI_HOST = 'prod-dr-sql-mi-001.database.windows.net';
-CREATE OR REPLACE GLOBAL CONSTANT String AZURE_SQL_MI_PORT = '1433';
-CREATE OR REPLACE GLOBAL CONSTANT String AZURE_SQL_MI_DATABASE = 'EnterpriseProductionDB';
-CREATE OR REPLACE GLOBAL CONSTANT String AZURE_SQL_MI_USERNAME = 'sqladmin';
-CREATE OR REPLACE GLOBAL CONSTANT String AZURE_SQL_MI_PASSWORD = 'EnterprisePassword123!';
+# Enterprise configuration parameters - Using environment variables for security
+CREATE OR REPLACE GLOBAL CONSTANT String AZURE_SQL_MI_HOST = System.getProperty('AZURE_SQL_MI_HOST', 'prod-dr-sql-mi-001.database.windows.net');
+CREATE OR REPLACE GLOBAL CONSTANT String AZURE_SQL_MI_PORT = System.getProperty('AZURE_SQL_MI_PORT', '1433');
+CREATE OR REPLACE GLOBAL CONSTANT String AZURE_SQL_MI_DATABASE = System.getProperty('AZURE_SQL_MI_DATABASE', 'EnterpriseProductionDB');
+CREATE OR REPLACE GLOBAL CONSTANT String AZURE_SQL_MI_USERNAME = System.getProperty('AZURE_SQL_MI_USERNAME', 'sqladmin');
+CREATE OR REPLACE GLOBAL CONSTANT String AZURE_SQL_MI_PASSWORD = System.getProperty('AZURE_SQL_MI_PASSWORD');
 
-CREATE OR REPLACE GLOBAL CONSTANT String GCP_CLOUD_SQL_HOST = '10.1.1.100';  # Private IP from GCP
-CREATE OR REPLACE GLOBAL CONSTANT String GCP_CLOUD_SQL_PORT = '5432';
-CREATE OR REPLACE GLOBAL CONSTANT String GCP_CLOUD_SQL_DATABASE = 'enterprise_app_db';
-CREATE OR REPLACE GLOBAL CONSTANT String GCP_CLOUD_SQL_USERNAME = 'postgres';
-CREATE OR REPLACE GLOBAL CONSTANT String GCP_CLOUD_SQL_PASSWORD = 'EnterprisePostgresPassword123!';
+CREATE OR REPLACE GLOBAL CONSTANT String GCP_CLOUD_SQL_HOST = System.getProperty('GCP_CLOUD_SQL_HOST', '10.1.1.100');  # Private IP from GCP
+CREATE OR REPLACE GLOBAL CONSTANT String GCP_CLOUD_SQL_PORT = System.getProperty('GCP_CLOUD_SQL_PORT', '5432');
+CREATE OR REPLACE GLOBAL CONSTANT String GCP_CLOUD_SQL_DATABASE = System.getProperty('GCP_CLOUD_SQL_DATABASE', 'enterprise_app_db');
+CREATE OR REPLACE GLOBAL CONSTANT String GCP_CLOUD_SQL_USERNAME = System.getProperty('GCP_CLOUD_SQL_USERNAME', 'postgres');
+CREATE OR REPLACE GLOBAL CONSTANT String GCP_CLOUD_SQL_PASSWORD = System.getProperty('GCP_CLOUD_SQL_PASSWORD');
 
 # Replication settings
 CREATE OR REPLACE GLOBAL CONSTANT String REPLICATION_MODE = 'FULL_CDC';
@@ -53,7 +53,7 @@ CREATE SOURCE AzureSqlMiSource USING MSSqlReader (
   
   # Enterprise security
   TrustStore: '/opt/striim/ssl/azure-truststore.jks',
-  TrustStorePassword: 'EnterpriseStriimTrustStore123!',
+  TrustStorePassword: System.getProperty('STRIIM_TRUSTSTORE_PASSWORD'),
   
   # Monitoring and alerting
   MonitoringInterval: MONITORING_INTERVAL,
@@ -239,7 +239,7 @@ CREATE TARGET MetricsTarget USING KafkaWriter (
   SecurityProtocol: 'SASL_SSL',
   SaslMechanism: 'SCRAM-SHA-256',
   SaslUsername: 'striim-metrics',
-  SaslPassword: 'EnterpriseKafkaPassword123!',
+  SaslPassword: System.getProperty('KAFKA_SASL_PASSWORD'),
   
   # Performance
   BatchSize: 100,

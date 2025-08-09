@@ -537,7 +537,7 @@ resource "google_sql_database" "main" {
 resource "google_sql_user" "main" {
   name     = "postgres"
   instance = google_sql_database_instance.main.name
-  password = "EnterprisePostgresPassword123!"
+  password = var.gcp_sql_user_password
 }
 
 # Service Account for Cloud Functions

@@ -155,7 +155,7 @@ scrape_configs:
     metrics_path: /metrics
     basic_auth:
       username: 'striim-admin'
-      password: 'EnterpriseStriimPassword123!'
+      password_file: '/etc/prometheus/secrets/striim-password'
 
   # Kafka monitoring
   - job_name: 'kafka'

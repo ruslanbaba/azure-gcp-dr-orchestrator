@@ -28,9 +28,9 @@ services:
       # Enterprise security
       STRIIM_ENABLE_SSL: "true"
       STRIIM_SSL_KEYSTORE: "/opt/striim/ssl/server.keystore"
-      STRIIM_SSL_KEYSTORE_PASSWORD: "EnterpriseStriimKeystore123!"
+      STRIIM_SSL_KEYSTORE_PASSWORD: "${STRIIM_SSL_KEYSTORE_PASSWORD}"
       STRIIM_SSL_TRUSTSTORE: "/opt/striim/ssl/server.truststore"
-      STRIIM_SSL_TRUSTSTORE_PASSWORD: "EnterpriseStriimTruststore123!"
+      STRIIM_SSL_TRUSTSTORE_PASSWORD: "${STRIIM_SSL_TRUSTSTORE_PASSWORD}"
       
       # Authentication
       STRIIM_ENABLE_LDAP: "true"
@@ -131,9 +131,9 @@ services:
       STRIIM_DB_LOCATION: "/opt/striim/data/derby"
       STRIIM_ENABLE_SSL: "true"
       STRIIM_SSL_KEYSTORE: "/opt/striim/ssl/server.keystore"
-      STRIIM_SSL_KEYSTORE_PASSWORD: "EnterpriseStriimKeystore123!"
+      STRIIM_SSL_KEYSTORE_PASSWORD: "${STRIIM_SSL_KEYSTORE_PASSWORD}"
       STRIIM_SSL_TRUSTSTORE: "/opt/striim/ssl/server.truststore"
-      STRIIM_SSL_TRUSTSTORE_PASSWORD: "EnterpriseStriimTruststore123!"
+      STRIIM_SSL_TRUSTSTORE_PASSWORD: "${STRIIM_SSL_TRUSTSTORE_PASSWORD}"
       STRIIM_ENABLE_LDAP: "true"
       STRIIM_LDAP_URL: "ldaps://enterprise-ldap.company.com:636"
       STRIIM_LDAP_BASE_DN: "dc=company,dc=com"
@@ -203,7 +203,7 @@ services:
     environment:
       POSTGRES_DB: striim_metadata
       POSTGRES_USER: striim_admin
-      POSTGRES_PASSWORD: EnterpriseStriimMetaDB123!
+      POSTGRES_PASSWORD: "${STRIIM_METADB_PASSWORD}"
       POSTGRES_INITDB_ARGS: "--auth-host=md5"
       
     volumes:
@@ -395,7 +395,7 @@ services:
     ports:
       - "3000:3000"
     environment:
-      GF_SECURITY_ADMIN_PASSWORD: EnterpriseGrafanaAdmin123!
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD}"
       GF_INSTALL_PLUGINS: grafana-piechart-panel,grafana-clock-panel
       GF_SERVER_ROOT_URL: http://localhost:3000/
       GF_SECURITY_ALLOW_EMBEDDING: true

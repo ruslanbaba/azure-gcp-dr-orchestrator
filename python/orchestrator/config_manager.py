@@ -267,11 +267,13 @@ class ConfigManager:
         # - Kubernetes Secrets
         # - etc.
         
+        # Example secrets - DO NOT USE IN PRODUCTION
+        # These are placeholder values for testing only
         hardcoded_secrets = {
-            "azure-sql-connection": "Server=prod-sql-mi-001.database.windows.net;Database=primary_db;",
-            "gcp-sql-connection": "postgresql://user@prod-cloudsql-001:5432/secondary_db",
-            "striim-admin-password": "SecureStriimPassword123!",
-            "webhook-auth-token": "webhook-auth-token-12345"
+            "azure-sql-connection": "${AZURE_SQL_CONNECTION_STRING}",
+            "gcp-sql-connection": "${GCP_SQL_CONNECTION_STRING}",
+            "striim-admin-password": "${STRIIM_ADMIN_PASSWORD}",
+            "webhook-auth-token": "${WEBHOOK_AUTH_TOKEN}"
         }
         
         return hardcoded_secrets.get(secret_name)

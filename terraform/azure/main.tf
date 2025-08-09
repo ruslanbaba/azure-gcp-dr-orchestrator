@@ -1299,7 +1299,7 @@ resource "azurerm_mssql_managed_instance" "main" {
   vcores                       = local.sql_mi_sku.capacity
   storage_size_in_gb           = 256
   administrator_login          = "sqladmin"
-  administrator_login_password = "EnterprisePassword123!"
+  administrator_login_password = var.azure_sql_admin_password
   
   identity {
     type = "SystemAssigned"

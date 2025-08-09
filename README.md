@@ -60,8 +60,8 @@ The Azure to GCP Cross-Cloud DR Orchestrator is designed to provide seamless dis
 - **Intelligent Detection**: Machine learning-based anomaly detection
 - **Graceful Degradation**: Staged failover with rollback capabilities
 - **Automated Recovery**: Self-healing mechanisms for common failures
-- **🆕 Canary Deployments**: Graduated failover with validation checkpoints
-- **🆕 Security-First Approach**: Hardened containers and network policies
+- **Canary Deployments**: Graduated failover with validation checkpoints
+- **Security-First Approach**: Hardened containers and network policies
 
 ###  Advanced Canary Failover System
 - **Graduated Rollout**: Start with 1 replica, validate health, then scale to full capacity
@@ -169,7 +169,7 @@ terraform plan -var-file="../configs/gcp.tfvars"
 terraform apply
 ```
 
-## ⚙️ Configuration
+## Configuration
 
 ### Environment Configuration
 The system uses environment-specific configuration files located in the `configs/` directory:
@@ -373,21 +373,33 @@ gcloud config set project YOUR-PROJECT-ID
 vim config/environments/production.json
 ```
 
-3. **Set Up Secrets**
+3. **Set Up Secrets (Secure Configuration)**
 ```bash
-# Configure secrets for production
-./scripts/configure.sh secrets production
+# ⚠️ IMPORTANT: Use secure secret management
+# Set environment variables instead of hardcoded values
 
-# Edit secrets file
-vim config/secrets/production/secrets.env
+# For Azure Key Vault
+export AZURE_SQL_PASSWORD="$(az keyvault secret show --name azure-sql-password --vault-name your-keyvault --query value -o tsv)"
+
+# For Google Secret Manager  
+export GCP_CLOUD_SQL_PASSWORD="$(gcloud secrets versions access latest --secret gcp-sql-password)"
+
+# For Kubernetes secrets
+export STRIIM_PASSWORD="$(kubectl get secret striim-credentials -o jsonpath='{.data.password}' | base64 -d)"
+
+# Configure secrets for production (uses environment variables)
+./scripts/configure.sh secrets production
 ```
 
 4. **Deploy to Production**
 ```bash
+# Ensure all secrets are properly configured
+./scripts/validate-secrets.sh
+
 DEPLOYMENT_ENV=production ./scripts/deploy.sh
 ```
 
-## 🚀 Usage Guide
+##  Usage Guide
 
 ### Starting the DR Orchestrator
 
@@ -444,7 +456,7 @@ curl http://dr-orchestrator:8080/api/health/gcp
 curl http://dr-orchestrator:8080/api/health/striim
 ```
 
-## 🧪 Testing & Validation
+##  Testing & Validation
 
 ### Running Test Suite
 
@@ -480,7 +492,7 @@ The test suite generates comprehensive reports including:
 - **Success Rates**: Failover reliability statistics
 - **Performance Metrics**: System behavior under load
 
-## 📊 Monitoring & Alerting
+##  Monitoring & Alerting
 
 ### Key Metrics
 
@@ -507,7 +519,7 @@ Critical alerts configured in Prometheus:
 - **PagerDuty**: 24/7 escalation for critical issues
 - **Webhooks**: Integration with ITSM systems
 
-## 🔧 Configuration Management
+##  Configuration Management
 
 ### Environment Configuration
 
@@ -547,7 +559,7 @@ Secrets are managed separately from configuration:
 # - SSL certificates
 ```
 
-## 🔒 Security & Compliance
+##  Security & Compliance
 
 ### Security Features
 
@@ -564,7 +576,7 @@ Secrets are managed separately from configuration:
 - **GDPR**: Data protection and privacy compliance
 - **HIPAA**: Healthcare data protection (configurable)
 
-## 🛠️ Troubleshooting
+##  Troubleshooting
 
 ### Common Issues
 
@@ -603,31 +615,6 @@ Secrets are managed separately from configuration:
 - **Automated Backups**: Cross-region backup strategy
 - **Update Management**: Rolling updates with zero downtime
 
-## 📈 Performance Optimization
-
-### RTO Optimization
-
-1. **Pre-warmed Clusters**: Keep GKE nodes ready
-2. **DNS Caching**: Reduce resolution time
-3. **Load Balancer Configuration**: Fast health checks
-4. **Container Images**: Pre-pulled on all nodes
-
-### RPO Optimization
-
-1. **Striim Configuration**: Optimized batch sizes
-2. **Network Bandwidth**: Dedicated cross-cloud connections
-3. **Database Tuning**: Read replica optimization
-4. **Conflict Resolution**: Automated merge strategies
-
-## 🤝 Contributing
-
-We welcome contributions! Please see our contributing guidelines:
-
-1. **Fork the Repository**
-2. **Create Feature Branch**: `git checkout -b feature/amazing-feature`
-3. **Make Changes**: Follow code style guidelines
-4. **Add Tests**: Ensure test coverage > 80%
-5. **Submit Pull Request**: Include detailed description
 
 ### Development Setup
 
@@ -644,29 +631,7 @@ pre-commit install
 python -m pytest tests/ --cov=src/
 ```
 
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 🙏 Acknowledgments
-
-- **Striim**: Real-time data integration platform
-- **Azure**: Cloud infrastructure and managed services
-- **Google Cloud**: Secondary cloud infrastructure
-- **Prometheus/Grafana**: Monitoring and observability
-- **Kubernetes**: Container orchestration platform
-
-## 📞 Support
-
-For support and questions:
-- **Documentation**: [Wiki Pages](wiki)
-- **Issues**: [GitHub Issues](issues)
-- **Discussions**: [GitHub Discussions](discussions)
-- **Email**: support@company.com
-
 ---
-
-**Built with ❤️ for enterprise disaster recovery requirements**
 
 ```
 azure-gcp-dr-orchestrator/
@@ -683,7 +648,7 @@ azure-gcp-dr-orchestrator/
 
 ##  Contributing
 
-We welcome contributions to improve the Azure to GCP Cross-Cloud DR Orchestrator. Please follow these steps:
+I Welcome contributions to improve the Azure to GCP Cross-Cloud DR Orchestrator. Please follow these steps:
 
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feature/amazing-feature`)
