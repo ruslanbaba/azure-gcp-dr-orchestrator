@@ -648,7 +648,7 @@ azure-gcp-dr-orchestrator/
 
 ##  Contributing
 
-I Welcome contributions to improve the Azure to GCP Cross-Cloud DR Orchestrator. Please follow these steps:
+contributions are welcome to improve the Azure to GCP Cross-Cloud DR Orchestrator. Please follow these steps:
 
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feature/amazing-feature`)
